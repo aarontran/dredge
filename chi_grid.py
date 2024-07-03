@@ -419,10 +419,15 @@ class ESPerp_GradRho_Species(object):
         eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
 
         # scaled to species rho_Ls, Omega_cs already
-        kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
-        oo = omr + 1j*omi
+        # broadcasting is faster than meshgrid
+        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
+        kk = self.k_vec        [:, np.newaxis, np.newaxis]
+        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
+        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
         # normalized to SIGNED Omega_cs
-        oo *= np.sign(self.qs_q0)
+        omr *= np.sign(self.qs_q0)
+        omi *= np.sign(self.qs_q0)
+        oo = omr + 1j*omi
 
         # notice that eps/k/omega has omega in denominator,
         # unlike numerator placement in chi_kinetic(...)
@@ -462,15 +467,19 @@ class ESPerp_GradRho_Species(object):
         eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
 
         # scaled to species rho_Ls, Omega_cs already
-        kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
-        oo = omr + 1j*omi
+        # broadcasting is faster than meshgrid
+        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
+        kk = self.k_vec        [:, np.newaxis, np.newaxis]
+        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
+        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
         # normalized to SIGNED Omega_cs
-        oo *= np.sign(self.qs_q0)
+        omr *= np.sign(self.qs_q0)
+        omi *= np.sign(self.qs_q0)
+        oo = omr + 1j*omi
 
-        term0 = (1 - eps*oo/kk) * self.bsum0
-        term1 = -1 * eps/kk * self.bsum1
+        terms = self.bsum0 - eps*oo/kk * self.bsum0 - eps/kk * self.bsum1
 
-        return omps_Omcs**2 * (term0 + term1)
+        return omps_Omcs**2 * terms
 
     # -------------------------------------------------------------------------
     # Derivaties of chi to help estimate electron Landau damping in a weak
@@ -504,10 +513,15 @@ class ESPerp_GradRho_Species(object):
         Omc0_Omcs = self.ms_m0 / self.qs_q0
 
         # scaled to species rho_Ls, Omega_cs already
-        kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
-        oo = omr + 1j*omi
+        # broadcasting is faster than meshgrid
+        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
+        kk = self.k_vec        [:, np.newaxis, np.newaxis]
+        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
+        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
         # normalized to SIGNED Omega_cs
-        oo *= np.sign(self.qs_q0)
+        omr *= np.sign(self.qs_q0)
+        omi *= np.sign(self.qs_q0)
+        oo = omr + 1j*omi
 
         term0 = -eps/kk * self.bsum0
         term1 = (1 - eps*oo/kk) * self.bsum0p
@@ -531,10 +545,15 @@ class ESPerp_GradRho_Species(object):
         Omc0_Omcs = self.ms_m0 / self.qs_q0  # signed
 
         # scaled to species rho_Ls, Omega_cs already
-        kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
-        oo = omr + 1j*omi
+        # broadcasting is faster than meshgrid
+        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
+        kk = self.k_vec        [:, np.newaxis, np.newaxis]
+        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
+        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
         # normalized to SIGNED Omega_cs
-        oo *= np.sign(self.qs_q0)
+        omr *= np.sign(self.qs_q0)
+        omi *= np.sign(self.qs_q0)
+        oo = omr + 1j*omi
 
         return omps_Omcs**2 * eps/kk/oo**2 * Omc0_Omcs
 
