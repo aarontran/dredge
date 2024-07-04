@@ -274,7 +274,7 @@ class ESPerp_GradRho_Species(object):
 
         The Bessel sums are crafted to omit epsilon (spatial gradient) factors,
         so that the user can cache the Bessel sums, then recompute behavior
-        quickly for varying epsilon.
+        quickly for varying epsilon, Omega_ci/omega_pi ~ vA/c ~ density, etc.
 
         Inputs:
             verbose = talk while computing
@@ -482,8 +482,9 @@ class ESPerp_GradRho_Species(object):
         return omps_Omcs**2 * terms
 
     # -------------------------------------------------------------------------
-    # Derivaties of chi to help estimate electron Landau damping in a weak
-    # growth approximation
+    # Derivaties of chi with respect to frequency omega, which can be used
+    # when estimating complex roots in a weak growth approximation.
+    # In practice, more useful to root find on the 3D (k, Re(ω), Im(ω)) grid.
     # -------------------------------------------------------------------------
 
     def chi_perp_prime_kinetic(self, epsilon0, ns_n0, omp0_Omc0):
@@ -563,17 +564,19 @@ class ESPerp_GradRho_Species(object):
 
     def chi_perp_kinetic_approx_An(self, n, omega_pin, epsilon0, ns_n0, omp0_Omc0):
         """
-        Compute APPROXIMATE Bessel terms organized in a new way, analogous to
-        the dispersion structure of EBWs/IBWs in homogeneous plasma, in order
-        to estimate stability via
-        (i) direct solution ω^2 = (...), or
-        (ii) quadratic (...)*ω^4 + (...)*ω^2 + (...) = 0,
+        Compute coefficient A_n for APPROXIMATE Bessel terms organized in a new
+        way, analogous to the dispersion structure of EBWs/IBWs in homogeneous
+        plasma, written as:
+
+            B/ω^2 + A_1/(ω^2-1) + A_2(ω^2/4-1) = 0
+
+        for the n=1-2 cyclotron band, to test for DCLC stability using an
+        easier-to-handle cubic equation in ω^2 of form:
+
+            (...)*ω^6 + (...)*ω^4 + (...)*ω^2 + (...) = 0,
+
         which should be simpler than solving the full dispersion relation on a
         grid of (k,Re(ω),Im(ω)).
-
-        It is hoped that this scheme can approximate the unstable DCLC growth
-        rate more faithfully than the criterion used in Baldwin+ (1975) and
-        Berk/Stewart (1977), but it needs to be tested.
 
         You must call
             self.cache_besselI_integrals(...) or cache_besselJ_integrals(...)
@@ -618,19 +621,19 @@ class ESPerp_GradRho_Species(object):
 
     def chi_perp_kinetic_approx_B(self, omega_pin, epsilon0, ns_n0, omp0_Omc0):
         """
-        Compute APPROXIMATE Bessel terms organized in a new way, analogous to
-        the dispersion structure of EBWs/IBWs in homogeneous plasma, in order
-        to estimate stability via
-        (i) direct solution ω^2 = (...), or
-        (ii) quadratic (...)*ω^4 + (...)*ω^2 + (...) = 0,
+        Compute coefficient B for APPROXIMATE Bessel terms organized in a new
+        way, analogous to the dispersion structure of EBWs/IBWs in homogeneous
+        plasma, written as:
+
+            B/ω^2 + A_1/(ω^2-1) + A_2(ω^2/4-1) = 0
+
+        for the n=1-2 cyclotron band, to test for DCLC stability using an
+        easier-to-handle cubic equation in ω^2 of form:
+
+            (...)*ω^6 + (...)*ω^4 + (...)*ω^2 + (...) = 0,
+
         which should be simpler than solving the full dispersion relation on a
         grid of (k,Re(ω),Im(ω)).
-
-        It is hoped that this scheme can approximate the unstable DCLC growth
-        rate more faithfully than the criterion used in Baldwin+ (1975) and
-        Berk/Stewart (1977), but it needs to be tested.
-
-        This method computes the scheme's B coefficient.
 
         Input:
             omega_pin = choose a constant value of omega to assume in the

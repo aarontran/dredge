@@ -53,9 +53,7 @@ Short-term possible improvements:
 * Dory-Guest-Harris (should work already, but not tested/studied)
 
 Long-term/stretch goals:
-* Dispersion for any k angle with gradient
-* Full relativistic muilti-species hot-plasma dispersion for any k angle (might
-  be faster to fork ALPS instead)
+* Dispersion for any k angle with gradient (maybe faster to fork ALPS instead)
 * Hua-Sheng Xie's matrix solve method
 * Parallelize (multiprocessing, pandas/dask, MPI, something else?)
 
