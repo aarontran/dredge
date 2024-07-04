@@ -57,15 +57,13 @@ class ESPerp_GradRho_Species(object):
             omega0_re_vec = 1D array, real angular frequency Re(omega) grid
                             points normalized to the reference species'
                             cyclotron frequency Omega_c0.
-                            The internal attribute is rescaled to the current
-                            species' cyclotron frequency Omega_cs, EXCEPT FOR
-                            THE CHARGE SIGN.
+                            The internal attribute is rescaled to the SIGNED
+                            current species' cyclotron frequency Omega_cs
             omega0_im_vec = 1D array, imaginary angular frequency Im(omega)
                             grid points scaled to the reference species'
                             cyclotron frequency omega_c0.
-                            The internal attribute is rescaled to the current
-                            species' cyclotron frequency Omega_cs, EXCEPT FOR
-                            THE CHARGE SIGN.
+                            The internal attribute is rescaled to the SIGNED
+                            current species' cyclotron frequency Omega_cs
         """
         self.ms_m0 = ms_m0
         self.qs_q0 = qs_q0
@@ -73,8 +71,8 @@ class ESPerp_GradRho_Species(object):
         # notice that charge sign is not used for (k,omega) rescaling
         # charge sign must be specified in chi
         self.k_vec = k0_vec * Ts_T0**0.5 * ms_m0**0.5 / abs(qs_q0)
-        self.omega_re_vec = omega0_re_vec * ms_m0 / abs(qs_q0)
-        self.omega_im_vec = omega0_im_vec * ms_m0 / abs(qs_q0)
+        self.omega_re_vec = omega0_re_vec * ms_m0 / qs_q0
+        self.omega_im_vec = omega0_im_vec * ms_m0 / qs_q0
 
         # dont allow any fancy/weird gridding
         assert self.k_vec.ndim == 1
@@ -426,9 +424,6 @@ class ESPerp_GradRho_Species(object):
         kk = self.k_vec        [:, np.newaxis, np.newaxis]
         omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
         omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
-        # normalized to SIGNED Omega_cs
-        omr *= np.sign(self.qs_q0)
-        omi *= np.sign(self.qs_q0)
         oo = omr + 1j*omi
 
         # notice that eps/k/omega has omega in denominator,
@@ -474,9 +469,6 @@ class ESPerp_GradRho_Species(object):
         kk = self.k_vec        [:, np.newaxis, np.newaxis]
         omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
         omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
-        # normalized to SIGNED Omega_cs
-        omr *= np.sign(self.qs_q0)
-        omi *= np.sign(self.qs_q0)
         oo = omr + 1j*omi
 
         terms = self.bsum0 - eps*oo/kk * self.bsum0 - eps/kk * self.bsum1
@@ -514,8 +506,6 @@ class ESPerp_GradRho_Species(object):
         omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
         omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
         oo = omr + 1j*omi
-        # normalized to SIGNED Omega_cs
-        oo *= self.qs_q0
 
         # rescale to species rho_Ls
         kp = k_parallel * (self.Ts_T0*self.ms_m0)**0.5 / abs(self.qs_q0)
@@ -566,9 +556,6 @@ class ESPerp_GradRho_Species(object):
         kk = self.k_vec        [:, np.newaxis, np.newaxis]
         omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
         omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
-        # normalized to SIGNED Omega_cs
-        omr *= np.sign(self.qs_q0)
-        omi *= np.sign(self.qs_q0)
         oo = omr + 1j*omi
 
         term0 = -eps/kk * self.bsum0
@@ -588,7 +575,6 @@ class ESPerp_GradRho_Species(object):
         """
         omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
         eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
-        qsgn = np.sign(self.qs_q0)
 
         Omc0_Omcs = self.ms_m0 / self.qs_q0  # signed
 
@@ -598,9 +584,6 @@ class ESPerp_GradRho_Species(object):
         kk = self.k_vec        [:, np.newaxis, np.newaxis]
         omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
         omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
-        # normalized to SIGNED Omega_cs
-        omr *= np.sign(self.qs_q0)
-        omi *= np.sign(self.qs_q0)
         oo = omr + 1j*omi
 
         return omps_Omcs**2 * eps/kk/oo**2 * Omc0_Omcs
@@ -656,9 +639,7 @@ class ESPerp_GradRho_Species(object):
         # replace the usual 3D (k,Re(ω),Im(ω)) with a 1D grid in k,
         # because ω is fixed to user-chosen approximation
         kk = self.k_vec
-        oo = omega_pin * self.ms_m0 / abs(self.qs_q0)  # mimic norm of self.omega_re_vec
-        # normalized to SIGNED Omega_cs
-        oo *= np.sign(self.qs_q0)
+        oo = omega_pin * self.ms_m0 / self.qs_q0  # mimic norm of self.omega_re_vec
 
         An = 2 * omps_Omcs**2 * (
             (1 - eps*oo/kk) * 1/kk**2 * (-1) * self.bessel_Fprime[n,...]
@@ -706,9 +687,7 @@ class ESPerp_GradRho_Species(object):
         # replace the usual 3D (k,Re(ω),Im(ω)) with a 1D grid in k,
         # because ω is fixed to user-chosen approximation
         kk = self.k_vec
-        oo = omega_pin * self.ms_m0 / abs(self.qs_q0)  # mimic norm of self.omega_re_vec
-        # normalized to SIGNED Omega_cs
-        oo *= np.sign(self.qs_q0)
+        oo = omega_pin * self.ms_m0 / self.qs_q0  # mimic norm of self.omega_re_vec
 
         # only the n=0 bessel term is needed
         B = omps_Omcs**2 * (-eps*oo/kk) * self.bessel_F[0,...]
@@ -734,9 +713,7 @@ class ESPerp_GradRho_Species(object):
         # replace the usual 3D (k,Re(ω),Im(ω)) with a 1D grid in k,
         # because ω is fixed to user-chosen approximation
         kk = self.k_vec
-        oo = omega_pin * self.ms_m0 / abs(self.qs_q0)  # mimic norm of self.omega_re_vec
-        # normalized to SIGNED Omega_cs
-        oo *= np.sign(self.qs_q0)
+        oo = omega_pin * self.ms_m0 / self.qs_q0  # mimic norm of self.omega_re_vec
 
         # only the n=0 bessel term is needed
         B = omps_Omcs**2 * (-eps*oo/kk) # * self.bessel_F[0,...]
