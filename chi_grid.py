@@ -22,6 +22,8 @@ import scipy as sp
 
 from datetime import datetime
 
+from . import special
+
 # beware... changing temperature, mass, charge,
 # ... requires re-computing bessel functions...
 # changing density or epsilon does NOT require recomputing bessels
@@ -480,6 +482,51 @@ class ESPerp_GradRho_Species(object):
         terms = self.bsum0 - eps*oo/kk * self.bsum0 - eps/kk * self.bsum1
 
         return omps_Omcs**2 * terms
+
+    def chi_prll_Zfunc_lowk(self, epsilon0, ns_n0, omp0_Omc0, k_parallel):
+        """
+        Compute very simplified low-k limit of parallel susceptibility which
+        ... neglects all Bessel terms n>=1
+        ... takes J_0^2(...) = 1 limit as k->0.
+        ... uses Zfunc to assume Maxwellian distribution with temperature Ts
+        this allows a simple description of parallel Landau damping.
+
+        Inputs:
+            epsilon0 = signed gradient lengthscale, normalized to reference
+                       species Larmor radius
+            ns_n0 = density ratio
+            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
+            k_parallel = (scalar) signed parallel angular wavenumber,
+                         normalized to reference species Larmor radius.
+                         When choosing sign of k_parallel, remember that omega
+                         is scaled to SIGNED species cyclotron freq.
+        """
+        if epsilon0 != 0:
+            raise Exception("Error: gradient term not yet added to parallel chi")
+
+        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
+        #eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+
+        # scaled to species rho_Ls, Omega_cs already
+        # broadcasting is faster than meshgrid
+        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
+        #kk = self.k_vec        [:, np.newaxis, np.newaxis]  # not needed for approximate parallel susceptibility
+        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
+        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
+        oo = omr + 1j*omi
+        # normalized to SIGNED Omega_cs
+        oo *= self.qs_q0
+
+        # rescale to species rho_Ls
+        kp = k_parallel * (self.Ts_T0*self.ms_m0)**0.5 / abs(self.qs_q0)
+
+        # plasma function argument
+        zeta0s = oo / kp
+
+        # ratio of larmor radius to debye length for this species
+        rhoLs_lde = 2**0.5 * omps_Omcs
+
+        return 1./kp**2 * rhoLs_lde**2 * (1 + zeta0s * special.Zfunc(zeta0s))
 
     # -------------------------------------------------------------------------
     # Derivaties of chi with respect to frequency omega, which can be used

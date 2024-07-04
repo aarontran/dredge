@@ -8,6 +8,7 @@ This code can compute and has been used to study:
 * DCLC in kparallel=0 limit with Maxwellians
 * DCLC in kparallel=0 limit with any distribution
 * DCLC in kparallel=0 limit with multiple species (should work but not tested
+* DCLC weak kparallel!=0 limit with electron Landau damping
 * All sub-cases of DCLC in kparallel=0 limit:
   + Perp ES in homogeneous plasma (Harris dispersion, Bernsteins, UH mode, ...)
   + Collisionless drift wave
@@ -43,7 +44,6 @@ integrals are cached as 1D (kperp,) vectors.
 
 Short-term possible improvements:
 * Root tracing / refinement of compute on grid (in work)
-* DCLC in kparallel!=0 limit with electron landau damping (in work)
 * Dispersion branch segmentation/topology for more user-friendly plotting
 * DCLC cotangent(...) approx just to compare
 * DCLC in kparallel!=0 limit with EM effects
