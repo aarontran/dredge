@@ -589,6 +589,145 @@ class ESPerp_GradRho_Species(object):
         return omps_Omcs**2 * eps/kk/oo**2 * Omc0_Omcs
 
     # -------------------------------------------------------------------------
+    # Same susceptibility functions, but take (ik,omega) as argument which
+    # means we cannot pre-cache the Bessel sums
+    # ik = index into k grid to use pre-cached Bessel integrals
+    # omega = complex argument
+    #
+    # Use this costlier calculation to help refine the dispersion relation
+    # solve on approximate grid
+    # -------------------------------------------------------------------------
+
+    def ikchi_perp_fluid(self, epsilon0, ns_n0, omp0_Omc0, ik, omega):
+        """
+        Compute chi at one grid point in k, arbitrary complex omega.
+        Inputs:
+            epsilon0 = signed gradient lengthscale, normalized to reference
+                       species Larmor radius
+            ns_n0 = density ratio
+            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
+            ik = index into instance attribute self.k_vec
+            omega = complex angular frequency
+        """
+        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
+        eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+
+        kk = self.k_vec[ik]  # scaled to species rho_Ls already
+        oo = omega * self.ms_m0/self.qs_q0  # rescale to Omega_cs
+
+        # notice that eps/k/omega has omega in denominator,
+        # unlike numerator placement in chi_kinetic(...)
+        return omps_Omcs**2 * (1 - eps/kk/oo)
+
+    def ikchi_perp_kinetic(self, epsilon0, ns_n0, omp0_Omc0, ik, omega):
+        """
+        Compute chi at one grid point in k, arbitrary complex omega.
+        You must first call
+        self.cache_besselI_integrals(...) or cache_besselJ_integrals(...)
+
+        Inputs:
+            epsilon0 = signed gradient lengthscale, normalized to reference
+                       species Larmor radius
+            ns_n0 = density ratio
+            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
+            ik = index into instance attribute self.k_vec
+            omega = complex angular frequency
+        """
+        assert self.bessel_Fprime is not None
+        assert self.bessel_F is not None
+
+        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
+        eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        kk = self.k_vec[ik]  # scaled to species rho_Ls already
+        oo = omega * self.ms_m0/self.qs_q0  # rescale to Omega_cs
+
+        # bessel indices
+        nvec = np.arange(self.bessel_Fprime.shape[0])
+        # bessel summand prefactor
+        invres = 2./(oo*oo - nvec[1:]**2)
+        # underscore to emphasize these are not computed on grid
+        _bsum0 = 1/kk**2 * np.sum( invres * nvec[1:]**2 * self.bessel_Fprime[1:,ik] )
+        _bsum1 = oo      * np.sum( invres               * self.bessel_F[1:,ik]      )
+        # handle n=0 term separately
+        _bsum1 += 1./oo * self.bessel_F[0,ik]
+
+        terms = (1 - eps*oo/kk) * _bsum0 - eps/kk * _bsum1
+
+        return omps_Omcs**2 * terms
+
+    def ikchi_perp_prime_fluid(self, epsilon0, ns_n0, omp0_Omc0, ik, omega):
+        """
+        Compute frequency-derivative of susceptibility, d(chi)/dω, at one grid
+        point in k and at arbitrary complex omega, for a cold fluid.
+
+        Derivative is taken as d/d(ω/Omega_c0) with respect to the REFERENCE
+        cyclotron frequency... therefore to convert between this
+        species + reference species you need a signed factor Omega_c0/Omega_cs
+
+        Inputs:
+            epsilon0 = signed gradient lengthscale, normalized to reference
+                       species Larmor radius
+            ns_n0 = density ratio
+            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
+            ik = index into instance attribute self.k_vec
+            omega = complex angular frequency
+        """
+        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
+        eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        kk = self.k_vec[ik]  # scaled to species rho_Ls already
+        oo = omega * self.ms_m0/self.qs_q0  # rescale to Omega_cs
+
+        Omc0_Omcs = self.ms_m0 / self.qs_q0  # signed
+        return omps_Omcs**2 * eps/kk/oo**2 * Omc0_Omcs
+
+    def ikchi_perp_prime_kinetic(self, epsilon0, ns_n0, omp0_Omc0, ik, omega):
+        """
+        Compute frequency-derivative of susceptibility, d(chi)/dω, at one grid
+        point in k and at arbitrary complex omega.  You must first call
+        self.cache_besselI_integrals(...) or cache_besselJ_integrals(...).
+
+        Derivative is taken as d/d(ω/Omega_c0) with respect to the REFERENCE
+        cyclotron frequency... therefore to convert between this
+        species + reference species you need a signed factor Omega_c0/Omega_cs
+
+        Inputs:
+            epsilon0 = signed gradient lengthscale, normalized to reference
+                       species Larmor radius
+            ns_n0 = density ratio
+            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
+            ik = index into instance attribute self.k_vec
+            omega = complex angular frequency
+        """
+        assert self.bessel_Fprime is not None
+        assert self.bessel_F is not None
+
+        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
+        eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        kk = self.k_vec[ik]  # scaled to species rho_Ls already
+        oo = omega * self.ms_m0/self.qs_q0  # rescale to Omega_cs
+
+        # bessel indices
+        nvec = np.arange(self.bessel_Fprime.shape[0])
+        # bessel summand prefactor
+        invres = 2./(oo*oo - nvec[1:]**2)
+        # underscore to emphasize these are not computed on grid
+        _bsum0 = 1/kk**2 * np.sum( invres * nvec[1:]**2 * self.bessel_Fprime[1:,ik] )
+        # derivatives of bessel sums
+        _bsum0p = -oo/kk**2 * np.sum( invres*invres * nvec[1:]**2 * self.bessel_Fprime[1:,ik] )
+        _bsum1p = (
+                      np.sum( invres    * self.bessel_F[1:,ik] )
+            - oo**2 * np.sum( invres**2 * self.bessel_F[1:,ik] )
+        )
+        # handle n=0 term separately
+        _bsum1p += -1/oo**2 * self.bessel_F[0,ik]
+
+        term0 = -eps/kk * _bsum0
+        term1 = (1 - eps*oo/kk) * _bsum0p
+        term2 = -1 * eps/kk * _bsum1p
+        Omc0_Omcs = self.ms_m0 / self.qs_q0  # signed
+        return omps_Omcs**2 * (term0 + term1 + term2) * Omc0_Omcs
+
+    # -------------------------------------------------------------------------
     # Experimental scheme to compute DCLC stability in a faster way
     # -------------------------------------------------------------------------
 
