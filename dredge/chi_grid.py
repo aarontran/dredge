@@ -159,11 +159,12 @@ class ESPerp_GradRho_Species(object):
 
         Inputs:
             bessel_nmax = largest Bessel index (cyclotron harmonic) to include
+                          indexing runs [0,1,2,...,bessel_nmax] inclusive
             verbose = talk while computing
 
         Output:
             None, but the following class attributes are updated.
-            bessel_Fprime, bessel_F = arrays with shape (bessel_nmax, k)
+            bessel_Fprime, bessel_F = arrays with shape (bessel_nmax+1, k)
             bessel_Fprime = integral 2*pi*vperp*dvperp * J_n^2 * dF/dvperp / vperp
                           = -2*exp(-λ) * I_n(λ)
             bessel_F      = integral 2*pi*vperp*dvperp * J_n^2 * F
@@ -211,6 +212,7 @@ class ESPerp_GradRho_Species(object):
 
         Inputs:
             bessel_nmax = largest Bessel index (cyclotron harmonic) to include
+                          indexing runs [0,1,2,...,bessel_nmax] inclusive
             Freduced = 1D array of F(vperp)
             vperp = 1D array of vperp sample points for Freduced,
                     normalized to species thermal velocity v_th = sqrt(2*kB*Ts/ms)
@@ -219,7 +221,7 @@ class ESPerp_GradRho_Species(object):
 
         Output:
             None, but the following class attributes are updated.
-            bessel_Fprime, bessel_F = arrays with shape (bessel_nmax, k)
+            bessel_Fprime, bessel_F = arrays with shape (bessel_nmax+1, k)
             bessel_Fprime = integral 2*pi*vperp*dvperp * J_n^2 * dF/dvperp / vperp
             bessel_F      = integral 2*pi*vperp*dvperp * J_n^2 * F
         """
@@ -275,6 +277,10 @@ class ESPerp_GradRho_Species(object):
         The Bessel sums are crafted to omit epsilon (spatial gradient) factors,
         so that the user can cache the Bessel sums, then recompute behavior
         quickly for varying epsilon, Omega_ci/omega_pi ~ vA/c ~ density, etc.
+
+        WARNING = the d(chi)/d(ω) Bessel sums have not been extensively tested
+        as of 2024 July 05, use at your own risk and be prepared to debug
+        errors.
 
         Inputs:
             verbose = talk while computing
@@ -535,6 +541,9 @@ class ESPerp_GradRho_Species(object):
         first.
 
         Distribution function enters via Bessel sums.
+        WARNING = the d(chi)/d(ω) Bessel sums have not been extensively tested
+        as of 2024 July 05, use at your own risk and be prepared to debug
+        errors.
 
         Derivative is taken as d/d(ω/Omega_c0) with respect to the REFERENCE
         cyclotron frequency... therefore to convert between this
@@ -548,7 +557,7 @@ class ESPerp_GradRho_Species(object):
         omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
         eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
 
-        Omc0_Omcs = self.ms_m0 / self.qs_q0
+        Omc0_Omcs = self.ms_m0 / self.qs_q0  # signed
 
         # scaled to species rho_Ls, Omega_cs already
         # broadcasting is faster than meshgrid
