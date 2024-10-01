@@ -73,6 +73,11 @@ class ESPerp_GradRho_Species(object):
         self.k_vec = k0_vec * Ts_T0**0.5 * ms_m0**0.5 / abs(qs_q0)
         self.omega_re_vec = omega0_re_vec * ms_m0 / qs_q0
         self.omega_im_vec = omega0_im_vec * ms_m0 / qs_q0
+        # keep copies of "original"/"fiducial" k, omega arrays
+        # on hand
+        self.k0_vec = k0_vec
+        self.omega0_re_vec = omega0_re_vec
+        self.omega0_im_vec = omega0_im_vec
 
         # dont allow any fancy/weird gridding
         assert self.k_vec.ndim == 1
@@ -116,7 +121,20 @@ class ESPerp_GradRho_Species(object):
     def grid_roots(self,arr):
         """
         Helper method to trace dispersion relation roots in 3D
-        (k, omega_re, omega_im) coordinates
+        (k, omega_re, omega_im) coordinates.
+        For each k, seeks local minima in arr[ Re(ω), Im(ω) ].
+        Returns indices into the species (k, Re(ω), Im(ω)) mesh.
+
+        Requires D for all species, which hints that this method doesn't belong
+        in this class... but live with the hacky code for now.
+
+        Useful to have indices, in some cases, to index into abs(D), D,
+        individual susceptibility grids, etc.
+
+        Input:
+            arr = abs(D) to minimize
+        Output:
+            inds = (3,) tuple of indices into k, Re(ω), Im(ω) mesh vectors
         """
         assert arr.ndim == 3
         assert arr.shape[0] == self.k_vec.size
@@ -141,6 +159,34 @@ class ESPerp_GradRho_Species(object):
         inds[2] += 1
         # revert to tuple now
         return tuple(inds)
+
+    def roots(self,arr):
+        """
+        Helper method to trace dispersion relation roots.
+        Same as grid_roots(...) but apply indices to return
+        actual values of k, omega, omega on the grid.
+
+        Values returned are (k,omega) normalized for reference species, not
+        current species, and requires D for all species, which hints that this
+        method doesn't belong in this class... but live with the hacky code for
+        now.
+
+        Input:
+            arr = abs(D) to minimize
+        Output:
+            k, Re(ω), Im(ω), arr vectors of equal length, encoding approximate
+            dispersion relation root positions and value of abs(D) at its local
+            extrema
+        """
+        inds = self.grid_roots(arr)
+        if len(inds[0]) == 0:
+            return np.array([]), np.array([]), np.array([])
+
+        k0_root = self.k0_vec[inds[0]]
+        omega0_re_root = self.omega0_re_vec[inds[1]]
+        omega0_im_root = self.omega0_im_vec[inds[2]]
+        arr_root = arr[ inds[0], inds[1], inds[2] ]
+        return k0_root, omega0_re_root, omega0_im_root, arr_root
 
     # -------------------------------------------------------------------------
     # Bessel function integral and sum caching
