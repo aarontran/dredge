@@ -570,6 +570,62 @@ class ESPerp_GradRho_Species(object):
 
         return 1./kp**2 * rhoLs_lde**2 * (1 + zeta0s * special.Zfunc(zeta0s))
 
+    def chi_oblique_Zfunc_lowk(self, epsilon0, ns_n0, omp0_Omc0, k_parallel):
+        """
+        Compute low-k limit of susceptibility chi on grid (k, Re(ω), Im(ω))
+        for electrostatic waves, inhomogeneous plasma, Maxwellian distribution.
+        ... neglects all Bessel terms n >= 2.
+        ... takes I_0(...), I_1(...) -> small argument limit.
+        ... Zfunc models Maxwellian distributions with finite temperature, to
+        allow a simple description of parallel Landau damping
+
+        This method provides the combined perp+prll susceptibility response;
+        is designed to supersede previous use of "chi_prll_Zfunc_lowk" and
+        "chi_perp_fluid" which was not exactly correct in a higher-order term.
+
+        Inputs:
+            epsilon0 = signed gradient lengthscale, normalized to reference
+                       species Larmor radius
+            ns_n0 = density ratio
+            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
+            k_parallel = (scalar) signed parallel angular wavenumber,
+                         normalized to reference species Larmor radius.
+                         When choosing sign of k_parallel, remember that omega
+                         is scaled to SIGNED species cyclotron freq.
+        """
+        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
+        eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+
+        # scaled to species rho_Ls, Omega_cs already
+        # broadcasting is faster than meshgrid
+        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
+        kk = self.k_vec        [:, np.newaxis, np.newaxis]
+        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
+        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
+        oo = omr + 1j*omi
+
+        # rescale to species rho_Ls
+        kp = k_parallel * (self.Ts_T0*self.ms_m0)**0.5 / abs(self.qs_q0)
+        # plasma function argument
+        zeta0s = oo / kp
+        # plasma function evaluated
+        Z0 = special.Zfunc(zeta0s)
+
+        kksq = kk**2
+        # NOTE it is tacitly assumed that kperp/kk ~ 1 for the moment...
+        # -ATr,2024nov15
+        #kperp = np.sqrt(kk**2 - kp**2)
+
+        terms = omps_Omcs**2 * (
+            #kperp**2/kksq * (eps/kperp * Z0/kp - zeta0s*Z0)
+            (eps/kk * Z0/kp - zeta0s*Z0)
+            + kp**2/kksq * 2./kp**2 * (1 + zeta0s*Z0)
+        )
+        # note that in the limit zeta0s->infty,
+        # we recover omps_Omcs**2 * (1 - eps/kk/oo) + ...
+        # like in chi_perp_fluid(...)
+        return terms
+
     # -------------------------------------------------------------------------
     # Derivaties of chi with respect to frequency omega, which can be used
     # when estimating complex roots in a weak growth approximation.
