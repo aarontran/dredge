@@ -180,7 +180,7 @@ class ESPerp_GradRho_Species(object):
         """
         inds = self.grid_roots(arr)
         if len(inds[0]) == 0:
-            return np.array([]), np.array([]), np.array([])
+            return np.array([]), np.array([]), np.array([]), np.array([])
 
         k0_root = self.k0_vec[inds[0]]
         omega0_re_root = self.omega0_re_vec[inds[1]]
