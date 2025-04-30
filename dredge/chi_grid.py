@@ -83,6 +83,12 @@ class ESPerp_GradRho_Species(object):
         assert self.k_vec.ndim == 1
         assert self.omega_re_vec.ndim == 1
         assert self.omega_im_vec.ndim == 1
+        # require that all sample points in (k,omega) space
+        # are monotonically ascending, with no duplicates
+        # being careful because sign of charge enters into omega
+        assert np.all(np.diff(self.omega_re_vec) > 0) or np.all(np.diff(self.omega_re_vec) < 0)
+        assert np.all(np.diff(self.omega_im_vec) > 0) or np.all(np.diff(self.omega_im_vec) < 0)
+        assert np.all(np.diff(self.k_vec) > 0)
 
         # calculation breaks at resonant denominators
         # when omega exactly equal to cyclotron harmonics
