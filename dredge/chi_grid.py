@@ -252,6 +252,7 @@ class ESPerp_GradRho_Species(object):
             Freduced = None,
             vperp = None,
             verbose = True,
+            with_bsum2 = False,
     ):
         """
         Compute Bessel J_n(...) integrals over reduced distribution F(vperp) or
@@ -271,6 +272,10 @@ class ESPerp_GradRho_Species(object):
                     where Ts is a reference Maxwellian temperature
             verbose = talk while computing
 
+            with_bsum2 = True/False, whether to compute the bessel sum integral
+                for the gradB term in perp electrostatic susceptibility,
+                see my notes from Tang derivation
+
         Output:
             None, but the following class attributes are updated.
             bessel_Fprime, bessel_F = arrays with shape (bessel_nmax+1, k)
@@ -285,6 +290,7 @@ class ESPerp_GradRho_Species(object):
 
         bessel_Jnsq_Fprime = np.empty((bessel_nmax+1, self.k_vec.size))
         bessel_Jnsq_F      = np.empty((bessel_nmax+1, self.k_vec.size))
+        bessel_Jnsq_Fprime_vpsq = np.empty((bessel_nmax+1, self.k_vec.size))
 
         # enforce normalization = 1
         # using the same integration scheme that will be used
@@ -311,15 +317,22 @@ class ESPerp_GradRho_Species(object):
             # \int F * J_n^2(z) * 2*pi*vperp dvperp
             bessel_Jnsq_F[n,:] = np.trapz(Fg * Jnsq * 2*np.pi*vperpg, vperpg, axis=-1)
 
+            # \int dF/dvperp * vperp * J_n^2(z) * 2*pi*vperp dvperp
+            if with_bsum2:
+                bessel_Jnsq_Fprime_vpsq[n,:] = np.trapz(Fprimeg*vperpg * Jnsq * 2*np.pi*vperpg, vperpg, axis=-1)
+
             if verbose:
                 print(f'Bessel J_{n:d} integral done, elapsed', datetime.now()-started)
 
         self.bessel_Fprime = bessel_Jnsq_Fprime
         self.bessel_F      = bessel_Jnsq_F
+        self.bessel_Fprime_vpsq = bessel_Jnsq_Fprime_vpsq
 
         return
 
-    def cache_bessel_sums(self, verbose=True, with_prime=False):
+    def cache_bessel_sums(self, verbose=True, with_prime=False,
+                          with_bsum2=False, with_gradBdrift=False,
+                          epsilonB=None, Freduced=None, vperp=None):
         """
         Compute sums of Bessel J_n(...) integrals or I_n(...) terms which have
         already been pre-cached by the user, for use in electrostatic
@@ -338,6 +351,16 @@ class ESPerp_GradRho_Species(object):
             verbose = talk while computing
             with_prime = compute additional sums for d(chi)/dω calculation,
                          which we are using to estimate electron Landau damping...
+
+            with_bsum2 = True/False, whether to compute the bessel sum integral
+                for the gradB term in perp electrostatic susceptibility,
+                see my notes from Tang derivation
+
+            with_gradBdrift = True/False, whether to include grad(B)
+                drift into the resonant denominator,but using sqrt(<vperp^2>)
+                as a stand-in for vperp to avoid taking the full velocity-space
+                integral
+                if True, you must also provide epsilonB, Freduced, and vperp
 
         Output:
             None, but the following class attributes are updated.
@@ -365,6 +388,7 @@ class ESPerp_GradRho_Species(object):
         # broadcast Bessel integrals from (n,k) to (n,k,Re(ω),Im(ω))
         bessel_Fprime = self.bessel_Fprime[..., np.newaxis, np.newaxis]
         bessel_F      = self.bessel_F     [..., np.newaxis, np.newaxis]
+        bessel_Fprime_vpsq = self.bessel_Fprime_vpsq[..., np.newaxis, np.newaxis]
 
         # construct complex omega on grid (k,Re(ω),Im(ω))
         omr, omi = np.meshgrid(self.omega_re_vec, self.omega_im_vec, indexing='ij')
@@ -374,6 +398,26 @@ class ESPerp_GradRho_Species(object):
         # construct k on broadcastable grid (k,Re(ω),Im(ω))
         kk = self.k_vec[:, np.newaxis, np.newaxis]
 
+        if with_gradBdrift:
+            # TODO refactor all this logic by initing Freduced as class
+            # variable... --ATr,2025apr30
+            assert Freduced is not None
+            assert vperp is not None
+            assert Freduced.ndim == 1
+            assert vperp.ndim == 1
+            assert Freduced.shape == vperp.shape
+            # enforce normalization = 1
+            norm = np.trapz(Freduced * 2*np.pi*vperp, vperp)
+            Freduced = Freduced/norm
+            # use <vperp^2> to compute FLR drift velocity
+            vpsq_moment = np.trapz(Freduced * vperp**2 * 2*np.pi*vperp, vperp)
+            # rescale epsilonB from reference species normalization
+            # to current species normalization
+            epsB = epsilonB * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+            # remap omega -> omega + k*v_{del B}
+            # which is safe to do throughout these bessel sums
+            oo = oo + kk * (0.5*epsB*vpsq_moment)
+
         # construct Bessel sums on grid (k,Re(ω),Im(ω))
         bshape = (self.k_vec.size, self.omega_re_vec.size, self.omega_im_vec.size)
         bsum0 = np.zeros(bshape, dtype='complex128')
@@ -381,6 +425,8 @@ class ESPerp_GradRho_Species(object):
         if with_prime:
             bsum0p = np.zeros(bshape, dtype='complex128')
             bsum1p = np.zeros(bshape, dtype='complex128')
+        if with_bsum2:
+            bsum2 = np.zeros(bshape, dtype='complex128')
 
         ##### another way to sum bessels, similar speed
         ##  #for n in range(0, bessel_nmax+1):
@@ -429,6 +475,8 @@ class ESPerp_GradRho_Species(object):
                         invres
                         - (2/n**2)*oo*oo * invres2
                 ) * bessel_F[n,...]
+            if with_bsum2:
+                bsum2 += invres * bessel_Fprime_vpsq[n,...]
 
             if verbose:
                 print(f'Bessel n={n:d} summand done, elapsed', datetime.now()-started)
@@ -445,6 +493,10 @@ class ESPerp_GradRho_Species(object):
             bsum1p *= 2
             # handle n=0 term separately
             bsum1p += -1./oo**2 * bessel_F[0,...]
+        if with_bsum2:
+            bsum2 *= 2*oo
+            # handle n=0 term separately
+            bsum2 += bessel_Fprime_vpsq[0,...] / oo
 
         if verbose:
             print('Bessel n=0 summand done, elapsed', datetime.now()-started)
@@ -455,6 +507,8 @@ class ESPerp_GradRho_Species(object):
         if with_prime:
             self.bsum0p = bsum0p
             self.bsum1p = bsum1p
+        if with_bsum2:
+            self.bsum2 = bsum2
 
         return
 
@@ -1112,3 +1166,32 @@ class ESPerp_GradRho_GradB_Species(ESPerp_GradRho_Species):
         # parentheses to try to be efficient/smart with the operations
         term0 = (omps_Omcs**2 * inv_a_cubed / kk**3) * (oo/np.tan(np.pi*oo))
         return term0
+
+    def chi_perp_kinetic_epsilonB(self, ns_n0, omp0_Omc0, epsilonN=0., epsilonB=0.):
+        """
+        Similar to ESPerp_GradRho_Species.chi_perp_kinetic(...) but add extra
+        bsum2 term, which we expect to be smaller than epsilonN terms by factor
+        of beta... so probably unimportant, unless gradients are steep AND beta
+        is large...
+        """
+
+        assert self.bsum0 is not None
+        assert self.bsum1 is not None
+        assert self.bsum2 is not None
+
+        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
+        epsN = epsilonN * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        epsB = epsilonB * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+
+        # scaled to species rho_Ls, Omega_cs already
+        # broadcasting is faster than meshgrid
+        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
+        kk = self.k_vec        [:, np.newaxis, np.newaxis]
+        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
+        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
+        oo = omr + 1j*omi
+
+        terms = self.bsum0 - epsN*oo/kk * self.bsum0 - epsN/kk * self.bsum1
+        terms += -0.5*(epsB/kk) * self.bsum2
+
+        return omps_Omcs**2 * terms
