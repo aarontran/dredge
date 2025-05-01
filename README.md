@@ -25,6 +25,7 @@ but it also has some useful features:
     fix ion chi but sweep fluid electron Te).
 
 
+
 Usage
 -----
 
@@ -41,6 +42,11 @@ Developer notes
 Compute bottleneck is arithmetic with big (kperp, Re(omega), Im(omega)) arrays.
 Bessels are cheap because they're only computed on (kperp, vperp) grid, then
 integrals are cached as 1D (kperp,) vectors.
+
+This code is really designed for the case where resonant denominators are
+independent of velocity (kparallel = 0).
+Performing velocity-space integral over all points in (k,omega) is too costly
+right now.
 
 Short-term possible improvements:
 * Root tracing / refinement of compute on grid (in work)
