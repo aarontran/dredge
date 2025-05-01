@@ -229,6 +229,7 @@ class ESPerp_GradRho_Species(object):
 
         bessel_In_Fprime = np.empty((bessel_nmax+1, self.k_vec.size))
         bessel_In_F      = np.empty((bessel_nmax+1, self.k_vec.size))
+        bessel_In_Fprime_vpsq = np.empty((bessel_nmax+1, self.k_vec.size))  # TODO Used for grad(B) term, NOT IMPLEMENTED YET --ATr,2025may01
 
         for n in range(0, bessel_nmax+1):
             arg = np.exp(-lamb) * sp.special.iv(n, lamb)
@@ -243,6 +244,7 @@ class ESPerp_GradRho_Species(object):
 
         self.bessel_Fprime = bessel_In_Fprime
         self.bessel_F      = bessel_In_F
+        self.bessel_Fprime_vpsq = bessel_In_Fprime_vpsq  # TODO Used for grad(B) term, NOT IMPLEMENTED YET --ATr,2025may01
 
         return
 
@@ -1071,8 +1073,10 @@ class ESPerp_GradRho_GradB_Species(ESPerp_GradRho_Species):
 
         # notice that eps/k/omega has omega in denominator,
         # unlike numerator placement in chi_kinetic(...)
-        term0 = omps_Omcs**2 * (1. - epsN/kk/oo + epsB/kk/oo)
-        return term0
+        # parentheses grouped to minimize number of big array operations
+        term0 = omps_Omcs**2
+        term1 = (omps_Omcs**2 * (epsB - epsN)) / (kk*oo)
+        return term0 + term1
 
     def disp_EM_fluid_tang(self, ns_n0, omp0_Omc0, epsilonN=0., vth0_c=0.):
         """
