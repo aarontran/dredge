@@ -977,3 +977,138 @@ class ESPerp_GradRho_Species(object):
         # of definition of B/omega^2 in the full multi-species dispersion rel
         B *= (self.qs_q0/self.ms_m0)**2
         return B
+
+
+class ESPerp_GradRho_GradB_Species(ESPerp_GradRho_Species):
+    """
+    Same but with Grad(B) and finite-beta effects following Tang (1972)
+    Need to merge codebase/logic into main class...
+    --ATr,2025april29
+    """
+
+    def chi_perp_fluid_tang(self, ns_n0, omp0_Omc0, epsilonN=0., epsilonB=0.):
+        """
+        Compute cold-fluid electrostatic chi_{xx} on grid (k, Re(ω), Im(ω))
+        with magnetic gradient effect, following Tang et al. (1972 Phys. Fluids).
+        and Tang (1972, PhD thesis).
+
+        Beware, the epsilonB term requires you to keep thermal contributions
+        from other chi_{ij} components to obtain a consistent ordering,
+        because epsilonB ~ -(beta/2) * epsilonN.
+        Within the assumed background equilibrium, beta is contributed by all species.
+
+        Inputs:
+            ns_n0 = species density ratio
+            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
+            epsilonN = density gradient (signed), scaled to reference species' (Larmor radius)^-1
+            epsilonB = magnetic gradient (signed), scaled to reference species' (Larmor radius)^-1
+        """
+        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
+        epsN = epsilonN * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        epsB = epsilonB * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+
+        # scaled to species rho_Ls, Omega_cs already
+        # broadcasting is faster than meshgrid
+        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
+        kk = self.k_vec        [:, np.newaxis, np.newaxis]
+        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
+        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
+        oo = omr + 1j*omi
+
+        # notice that eps/k/omega has omega in denominator,
+        # unlike numerator placement in chi_kinetic(...)
+        term0 = omps_Omcs**2 * (1. - epsN/kk/oo + epsB/kk/oo)
+        return term0
+
+    def disp_EM_fluid_tang(self, ns_n0, omp0_Omc0, epsilonN=0., vth0_c=0.):
+        """
+        Warm-fluid electromagnetic correction to the exactly-perpendicular
+        electrostatic slab dispersion relation, as expressed by
+        Tang et al. (1972); Callen & Guest (1971, 1973) in the form
+
+            omega^2/k^2/c^2 * chi_{xy} * chi_{yx}
+
+        which is valid for chi_{yy} << k^2*c^2/omega^2.
+
+        Warning: this is NOT a susceptibility; you cannot add contributions
+        from multiple species.
+
+        Inputs:
+            ns_n0 = species density ratio
+            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
+            epsilonN = density gradient (signed), scaled to reference species' (Larmor radius)^-1
+            vth0_c = thermal velocity of reference species, scaled to vacuum speed of light c
+        """
+        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
+        epsN = epsilonN * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        vts_c = vth0_c * (self.Ts_T0/self.ms_m0)**0.5
+
+        # scaled to species rho_Ls, Omega_cs already
+        # broadcasting is faster than meshgrid
+        kk = self.k_vec        [:, np.newaxis, np.newaxis]
+        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
+        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
+        oo = omr + 1j*omi
+
+        term0 = omps_Omcs**4 * vts_c**2 / (kk*kk)
+        # this factor has expanded (1 + C*epsilon)^2 ~ 1 + 2*C*epsilon
+        # which arises from chi_{xy} * chi_{yx}
+        term1 = term0*epsN*kk/oo
+
+        return term0 + term1
+
+    def chi_perp_kinetic_PR1966(self, ns_n0, omp0_Omc0, Freduced, vperp):
+        """
+        Compute kinetic electrostatic chi_{xx} on grid (k, Re(ω), Im(ω))
+        in the limit k >> 1 (normalized to species Larmor radius)
+        and neglecting spatial gradients in both density and magnetic field.
+        We therefore invoke the following assumptions / procedures:
+        * J_n^2(z) -> 1/(pi*z) for z >> 1,
+        * Neglect grad(B) drift in resonant denominator
+        * Neglect all O(epsilonN^1) and O(epsilonB^1) contributions to susceptibility
+        * Convert infinite sum_n 1/(omega + n) = pi * cotangent(pi*omega)
+
+        The calculation follows Post/Rosenbluth (1966) Eqn's (34)--(36),
+        and also Tang+ (1972) Eqn's (2)--(4), if Tang's Eqn (2)
+        is multiplied by a factor of 2*pi to make the normalization work.
+
+        However, do NOT integrate by parts following Post/Rosenbluth Eqn (35)
+        so that we can consider distributions with partly-filled loss cones,
+        i.e., F(vperp=0) != 0.
+
+        Inputs:
+            ns_n0 = species density ratio
+            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
+            Freduced = 1D array of F(vperp)
+            vperp = 1D array of vperp sample points for Freduced,
+                    normalized to species thermal velocity v_th = sqrt(2*kB*Ts/ms)
+                    where Ts is a reference Maxwellian temperature
+        """
+        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
+
+        # TODO REFACTOR THIS INTO MAIN SPECIES DEFINITION --ATr,2025april29
+        # Use this to help decide whether to use bessel I or bessel J.....
+        assert Freduced.ndim == 1
+        assert vperp.ndim == 1
+        assert Freduced.shape == vperp.shape
+        # enforce normalization = 1
+        # using the same integration scheme that will be used
+        # in all the subsequent Bessel-weighted integrals...
+        norm = np.trapz(Freduced * 2*np.pi*vperp, vperp)
+        Freduced = Freduced/norm
+        # dF/dvperp
+        Fprime = np.gradient(Freduced, vperp)
+        # inv_a_cubed is 1/a^3 where a \propto Larmor radius
+        # for a maxwellian, 1/a^3 = -2*sqrt(pi)*(2*kB*Ts/ms)^(-3/2)
+        inv_a_cubed = np.trapz(Fprime/vperp * 2*np.pi, vperp)
+
+        # scaled to species rho_Ls, Omega_cs already
+        # broadcasting is faster than meshgrid
+        kk = self.k_vec        [:, np.newaxis, np.newaxis]
+        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
+        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
+        oo = omr + 1j*omi
+
+        # parentheses to try to be efficient/smart with the operations
+        term0 = (omps_Omcs**2 * inv_a_cubed / kk**3) * (oo/np.tan(np.pi*oo))
+        return term0
