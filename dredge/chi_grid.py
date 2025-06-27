@@ -334,6 +334,7 @@ class ESPerp_GradRho_Species(object):
 
     def cache_bessel_sums(self, verbose=True, with_prime=False,
                           with_bsum2=False, with_gradBdrift=False,
+                          Gforce=0,
                           epsilonB=None, Freduced=None, vperp=None):
         """
         Compute sums of Bessel J_n(...) integrals or I_n(...) terms which have
@@ -363,6 +364,24 @@ class ESPerp_GradRho_Species(object):
                 as a stand-in for vperp to avoid taking the full velocity-space
                 integral
                 if True, you must also provide epsilonB, Freduced, and vperp
+
+            Gforce = 0 or float, external force field acceleration (cm/s^2)
+                used here to add particle drift in resonant denominator.
+                Gforce is used for both gravity and external electric fields
+                (hence capital rather than lowercase G).
+
+                Value must be normalized to species-specific v_th * abs(Omega_cs).
+                NOTE CONVENTION DIFFERS FROM OTHER CODE (e.g., epsilonN is
+                    normalized to REFERENCE species), b/c I want to put in
+                    different forces for different species...
+                NOTE abs(Omega_cs) is required because it needs to match
+                    k_vec's internal normalization
+                TODO cleanup conventions --ATr,2025june26
+
+                Sign matters; positive G points along the +y axis.
+
+            epsilonB,Freduced,vperp = used for grad(B) drift calculation in the
+                resonant denominator
 
         Output:
             None, but the following class attributes are updated.
@@ -419,6 +438,12 @@ class ESPerp_GradRho_Species(object):
             # remap omega -> omega + k*v_{del B}
             # which is safe to do throughout these bessel sums
             oo = oo + kk * (0.5*epsB*vpsq_moment)
+
+        if Gforce != 0:
+            # remap omega -> omega - k*G
+            # where capital G is dimensionless gravitational drift,
+            # allows to include other forces (electric, ...)
+            oo = oo - kk * Gforce
 
         # construct Bessel sums on grid (k,Re(ω),Im(ω))
         bshape = (self.k_vec.size, self.omega_re_vec.size, self.omega_im_vec.size)
@@ -1197,5 +1222,73 @@ class ESPerp_GradRho_GradB_Species(ESPerp_GradRho_Species):
 
         terms = self.bsum0 - epsN*oo/kk * self.bsum0 - epsN/kk * self.bsum1
         terms += -0.5*(epsB/kk) * self.bsum2
+
+        return omps_Omcs**2 * terms
+
+
+class ESPerp_GradRho_Gforce_Species(ESPerp_GradRho_Species):
+    """
+    Same but with external gravitational and/or electric field, following
+    Rosenbluth, Krall, Rostoker (1962)
+    """
+
+    def chi_perp_kinetic_Gforce(self, ns_n0, omp0_Omc0, epsilonN=0., Gforce=0.):
+        """
+        Similar to ESPerp_GradRho_Species.chi_perp_kinetic(...) but add extra
+        terms to include drifts caused by an external force field.
+
+        You must call
+            self.cache_besselI_integrals(...) or cache_besselJ_integrals(...)
+            self.cache_bessel_sums(...)
+        before you can compute kinetic chi.
+
+        Input:
+            ns_n0 = density ratio
+
+            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
+
+            epsilonN = signed gradient lengthscale, normalized to reference
+                       species Larmor radius
+
+            Gforce = 0 or float, external force field acceleration (cm/s^2).
+                Gforce is used for both gravity and external electric fields
+                (hence capital rather than lowercase G).
+
+                Value must be normalized to species-specific v_th * abs(Omega_cs).
+                NOTE CONVENTION DIFFERS FROM OTHER CODE (e.g., epsilonN is
+                    normalized to REFERENCE species), b/c I want to put in
+                    different forces for different species...
+                NOTE abs(Omega_cs) is required because it needs to match
+                    k_vec's internal normalization
+                TODO cleanup conventions --ATr,2025june26
+
+                Sign matters; positive G points along the +y axis.
+
+        """
+        assert self.bsum0 is not None
+        assert self.bsum1 is not None
+
+        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
+        # IMPORTANT: abs(qs_q0) is matched to abs(q) in k_vec normalization
+        epsN = epsilonN * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        #epsB = epsilonB * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+
+        # scaled to species rho_Ls, Omega_cs already
+        # broadcasting is faster than meshgrid
+        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
+        kk = self.k_vec        [:, np.newaxis, np.newaxis]
+        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
+        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
+        oo = omr + 1j*omi
+
+        ## DCLC
+        #terms = self.bsum0 - epsN*oo/kk * self.bsum0 - epsN/kk * self.bsum1
+        ## DCLC with finite grad(B) correction
+        #terms += -0.5*(epsB/kk) * self.bsum2
+
+        # DCLC but with gravitational drift
+        # recall that bsum0 terms are distributed out to minimize large array
+        # operations.
+        terms = self.bsum0 - epsN*oo/kk * self.bsum0 - (epsN + 2*Gforce)/kk * self.bsum1
 
         return omps_Omcs**2 * terms
