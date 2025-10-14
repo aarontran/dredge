@@ -1,18 +1,23 @@
-#!/usr/bin/env python
 """
-Velocity distribution functions useful for plasma dispersion calculations
+Analytic velocity distribution functions (no numerical grid is assumed)
 """
-
-from __future__ import division, print_function
 
 import numpy as np
-import scipy as sp
 
 
-def maxwell_reduced(vperp, vth):
+def bimaxwellian(vperp, vprll, vthperp, vthprll):
+    """
+    Bi-Maxwellian distribution, non-relativistic.
+    """
+    norm = 1./(np.pi**1.5 * vthperp * vthprll**0.5)
+    return norm * np.exp( - (vperp/vthperp)**2 - (vprll/vthprll)**2 )
+
+
+def maxwellian_reduced(vperp, vth):
     """
     Reduced 1D Maxwellian distribution in vperp
     defined such that F(vperp) * 2*pi*vperp * dvperp = f(v) d^3 v.
+    Non-relativistic.
     """
     return 1/(np.pi*vth**2) * np.exp(-(vperp/vth)**2)
 

@@ -1,18 +1,7 @@
-#!/usr/bin/env python
 """
 Code to calculate plasma susceptibilities for dispersion relation
-now optimized for uniform grids on (k, Re(omega), Im(omega)) to help
-us quickly sweep parameter space of (Tc/T0, nc/n0, epsilon).
-
-Keep Bessel sum code and chi code packaged together because their normalization
-factors are linked; changes to one method affect the other.
-
-The besselI(...) and besselJ(...) sums are defined to agree exactly for a
-Maxwellian, up to numerical precision and discretization errors.
-
-Important to use same grids throughout - it makes things simpler...
-
--ATr, 2024 Jan-Jun
+on uniform grids of (k, Re(omega), Im(omega)) to help us quickly sweep
+parameter space of (Tc/T0, nc/n0, epsilon).
 """
 
 from __future__ import division, print_function
@@ -21,8 +10,11 @@ import numpy as np
 import scipy as sp
 
 from datetime import datetime
+from scipy.interpolate import RegularGridInterpolator
 
-from . import special
+from .special import Zfunc
+from .species import Species
+from .const import CLIGHT
 
 # beware... changing temperature, mass, charge,
 # ... requires re-computing bessel functions...
@@ -31,88 +23,42 @@ from . import special
 # ... it modifies both Omcs/omps and rho_Ls
 # ... dont worry about it for now
 
+# package chi / meshing together
+# because the numerical approach to computing different chi's may differ
+# considerably...
 
-class ESPerp_GradRho_Species(object):
+class WaveGrid(object):
 
-    def __init__(self, ms_m0, qs_q0, Ts_T0,
-                 k0_vec, omega0_re_vec, omega0_im_vec):
+    def __init__(k_vec, omega_re_vec, omega_im_vec):
         """
-        Hot plasma susceptibility for perpendicular electrostatic waves as
-        computed for one species, quantities normalized to user's choice of
-        some reference species.
-        Coordinate scheme:
-            k points along x
-            grad(n) points along y, so +epsilon = density increaes towards positive y
-            magnetic field points along z.
-            Electron diamagnetic drift towards +k, ion diamagnetic drift towards -k.
+        Grid of (k, Re(ω), Im(ω)) for dispersion relation calculations
+        Although code within this class appears to not care about (k, omega)
+        normalization, you must diligently construct (k, ω) in CGS units
+        because dependent code relies upon that normalization convention.
+
         Inputs:
-            ms_m0 = mass
-            qs_q0 = signed charge
-            Ts_T0 = temperature (mainly for Maxwellian case)
-            k0_vec = 1D array of angular wavenumber grid points, normalized to
-                     the reference species Larmor radius v_th/Omega_cs where
-                     v_th = sqrt(2*kB*T0/ms).
-                     The internal attribute is rescaled to the current species'
-                     Larmor radius.
-            omega0_re_vec = 1D array, real angular frequency Re(omega) grid
-                            points normalized to the reference species'
-                            cyclotron frequency Omega_c0.
-                            The internal attribute is rescaled to the SIGNED
-                            current species' cyclotron frequency Omega_cs
-            omega0_im_vec = 1D array, imaginary angular frequency Im(omega)
-                            grid points scaled to the reference species'
-                            cyclotron frequency omega_c0.
-                            The internal attribute is rescaled to the SIGNED
-                            current species' cyclotron frequency Omega_cs
+            k_vec = 1D array of angular wavenumber grid points in cm^{-1}.
+            omega_re_vec = 1D array, real angular frequency Re(omega)
+                           grid points in rad/s.
+            omega_im_vec = 1D array, imaginary angular frequency Im(omega)
+                           grid points in rad/s.
         """
-        self.ms_m0 = ms_m0
-        self.qs_q0 = qs_q0
-        self.Ts_T0 = Ts_T0
-        # notice that charge sign is not used for (k,omega) rescaling
-        # charge sign must be specified in chi
-        self.k_vec = k0_vec * Ts_T0**0.5 * ms_m0**0.5 / abs(qs_q0)
-        self.omega_re_vec = omega0_re_vec * ms_m0 / qs_q0
-        self.omega_im_vec = omega0_im_vec * ms_m0 / qs_q0
-        # keep copies of "original"/"fiducial" k, omega arrays
-        # on hand
-        self.k0_vec = k0_vec
-        self.omega0_re_vec = omega0_re_vec
-        self.omega0_im_vec = omega0_im_vec
-
+        self.k_vec = k_vec
+        self.omega_re_vec = omega_re_vec
+        self.omega_im_vec = omega_im_vec
         # dont allow any fancy/weird gridding
         assert self.k_vec.ndim == 1
         assert self.omega_re_vec.ndim == 1
         assert self.omega_im_vec.ndim == 1
-        # require that all sample points in (k,omega) space
-        # are monotonically ascending, with no duplicates
-        # being careful because sign of charge enters into omega
-        assert np.all(np.diff(self.omega_re_vec) > 0) or np.all(np.diff(self.omega_re_vec) < 0)
-        assert np.all(np.diff(self.omega_im_vec) > 0) or np.all(np.diff(self.omega_im_vec) < 0)
+        # grid points must ascend monotonically, with no duplicates
+        # be careful because sign of charge enters into omega
+        assert np.all(np.diff(self.omega_re_vec) > 0)
+        assert np.all(np.diff(self.omega_im_vec) > 0)
         assert np.all(np.diff(self.k_vec) > 0)
-
-        # calculation breaks at resonant denominators
-        # when omega exactly equal to cyclotron harmonics
-        # so ensure we only sample non-integer values
-        # check for both reference species and the current species
-        assert np.all(omega0_re_vec.astype(np.int64) != omega0_re_vec)
-        assert np.all(self.omega_re_vec.astype(np.int64) != self.omega_re_vec)
-
-        # Bessel functions convolved with F, Fprime computed on demand by user;
-        # either Jn^2(...) or In(...) forms can be used
-        self.bessel_Fprime = None
-        self.bessel_F      = None
-
-        # Bessel function sums must be computed on demand by user
-        self.bsum0 = None
-        self.bsum1 = None
-        # Derivatives of bessel sums w.r.t. omega
-        # used to estimate electron Landau damping
-        self.bsum0p = None
-        self.bsum1p = None
 
     def mesh_extent(self):
         """Helper method for 2D plots of dispersion or susceptibility terms"""
-        extent = [-1, 1, -1, 1, -1, 1]
+        extent = np.array([-1, 1, -1, 1, -1, 1])
         if self.k_vec.size > 1:
             extent[0] = self.k_vec[0]  - np.diff(self.k_vec)[0]/2
             extent[1] = self.k_vec[-1] + np.diff(self.k_vec)[-1]/2
@@ -124,7 +70,7 @@ class ESPerp_GradRho_Species(object):
             extent[5] = self.omega_im_vec[-1] + np.diff(self.omega_im_vec)[-1]/2
         return extent
 
-    def grid_roots(self,arr):
+    def grid_roots(self, arr: np.ndarray):
         """
         Helper method to trace dispersion relation roots in 3D
         (k, omega_re, omega_im) coordinates.
@@ -166,16 +112,11 @@ class ESPerp_GradRho_Species(object):
         # revert to tuple now
         return tuple(inds)
 
-    def roots(self,arr):
+    def roots(self, arr: np.ndarray):
         """
         Helper method to trace dispersion relation roots.
         Same as grid_roots(...) but apply indices to return
         actual values of k, omega, omega on the grid.
-
-        Values returned are (k,omega) normalized for reference species, not
-        current species, and requires D for all species, which hints that this
-        method doesn't belong in this class... but live with the hacky code for
-        now.
 
         Input:
             arr = abs(D) to minimize
@@ -194,6 +135,70 @@ class ESPerp_GradRho_Species(object):
         arr_root = arr[ inds[0], inds[1], inds[2] ]
         return k0_root, omega0_re_root, omega0_im_root, arr_root
 
+
+class SlabESPerp(object):
+
+    def __init__(grid: WaveGrid,
+                 species: Species,
+                 B0: float):
+        """
+        Susceptibility for perpendicular electrostatic waves in a slab plasma,
+        computed for one species on a grid of (k, Re(ω), Im(ω)).
+
+        Coordinate scheme:
+        * k points along x
+        * grad(n) points along y, so epsilon = dn/dy
+        * magnetic field points along z
+        * Electron diamagnetic drift towards +k, ion towards -k for epsilon > 0
+
+        Inputs:
+            grid = dredge.chi.WaveGrid(...) instance
+            species = dredge.species.Species(...) instance
+            B0 = magnetic field in Gauss (CGS units)
+        """
+        self.grid = grid
+        self.species = species
+        self.B0 = B0
+
+        # internal code works in dimensionless units
+        # charge sign is not used for k rescaling,
+        # but charge sign is included in Omega_{cs}
+        self.k_vec        = grid.k_vec        * self.species.rLs (B = self.B0)
+        self.omega_re_vec = grid.omega_re_vec / self.species.Omcs(B = self.B0)
+        self.omega_im_vec = grid.omega_im_vec / self.species.Omcs(B = self.B0)
+
+        # calculation breaks at resonant denominators
+        # when omega exactly equal to cyclotron harmonics
+        # so ensure we only sample non-integer values
+        assert np.all(self.omega_re_vec.astype(np.int64) != self.omega_re_vec)
+
+        # grids for broadcasting, faster than np.meshgrid(...)
+        kk  = self.k_vec       [:, np.newaxis, np.newaxis]
+        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
+        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
+        self.kk = kk
+        self.oo = omr + 1j*omi
+
+        # dimensionless reduced distribution F(v_perp)
+        try:
+            self.Freduced = species.df_reduced * species.vth_perp
+            self.vperp    = species.vperp_vec  / species.vth_perp
+        except:
+            self.Freduced = None
+            self.vperp    = None
+
+        # Bessel functions convolved with F, Fprime computed on demand by user;
+        # either Jn^2(...) or In(...) forms can be used
+        self.bessel_Fprime = None
+        self.bessel_F      = None
+        # Bessel function sums must be computed on demand by user
+        self.bsum0 = None
+        self.bsum1 = None
+        # Derivatives of bessel sums w.r.t. omega
+        # used to estimate electron Landau damping
+        self.bsum0p = None
+        self.bsum1p = None
+
     # -------------------------------------------------------------------------
     # Bessel function integral and sum caching
     # -------------------------------------------------------------------------
@@ -208,6 +213,11 @@ class ESPerp_GradRho_Species(object):
         temperature Ts, for electrostatic dispersion relation of a slab plasma
         with a density gradient, for linear waves propagating exactly
         perpendicular to B.
+
+        Package Bessel sum and chi code together because their normalization
+        factors are linked; changes to one method affect the other.
+        The besselI(...) and besselJ(...) sums are defined to agree exactly for
+        a Maxwellian, up to numerical precision and discretization errors.
 
         Inputs:
             bessel_nmax = largest Bessel index (cyclotron harmonic) to include
@@ -251,8 +261,6 @@ class ESPerp_GradRho_Species(object):
     def cache_besselJ_integrals(
             self,
             bessel_nmax = 20,
-            Freduced = None,
-            vperp = None,
             verbose = True,
             with_bsum2 = False,
     ):
@@ -262,16 +270,15 @@ class ESPerp_GradRho_Species(object):
         dispersion relation of a slab plasma with a density gradient, for
         linear waves propagating exactly perpendicular to B.
 
-        F(vperp) is defined such that f(v) d^3v = F(vperp) 2*pi*vperp dvperp,
-        i.e., F = integral f(v) dv_parallel.
+        Package Bessel sum and chi code together because their normalization
+        factors are linked; changes to one method affect the other.
+        The besselI(...) and besselJ(...) sums are defined to agree exactly for
+        a Maxwellian, up to numerical precision and discretization errors.
 
         Inputs:
             bessel_nmax = largest Bessel index (cyclotron harmonic) to include
                           indexing runs [0,1,2,...,bessel_nmax] inclusive
-            Freduced = 1D array of F(vperp)
-            vperp = 1D array of vperp sample points for Freduced,
-                    normalized to species thermal velocity v_th = sqrt(2*kB*Ts/ms)
-                    where Ts is a reference Maxwellian temperature
+
             verbose = talk while computing
 
             with_bsum2 = True/False, whether to compute the bessel sum integral
@@ -284,30 +291,21 @@ class ESPerp_GradRho_Species(object):
             bessel_Fprime = integral 2*pi*vperp*dvperp * J_n^2 * dF/dvperp / vperp
             bessel_F      = integral 2*pi*vperp*dvperp * J_n^2 * F
         """
-        assert Freduced.ndim == 1
-        assert vperp.ndim == 1
-        assert Freduced.shape == vperp.shape
 
         started = datetime.now()
+
+        # Setup (k, vperp) grid for Bessel Jn-weighted moments of F(vperp)
+        # working in species-specific dimensionless units
+        # k*(Larmor radius), v / v_{th,perp}, etc...
+        # VDF normalization = 1 enforced by KineticPerpVDFGrid(...)
+        kg      = self.k_vec                            [...,np.newaxis]
+        vperpg  = self.vperp                            [np.newaxis,...]
+        Fg      = self.Freduced                         [np.newaxis,...]
+        Fprimeg = np.gradient(self.Freduced, self.vperp)[np.newaxis,...]
 
         bessel_Jnsq_Fprime = np.empty((bessel_nmax+1, self.k_vec.size))
         bessel_Jnsq_F      = np.empty((bessel_nmax+1, self.k_vec.size))
         bessel_Jnsq_Fprime_vpsq = np.empty((bessel_nmax+1, self.k_vec.size))
-
-        # enforce normalization = 1
-        # using the same integration scheme that will be used
-        # in all the subsequent Bessel-weighted integrals...
-        norm = np.trapz(Freduced * 2*np.pi*vperp, vperp)
-        Freduced = Freduced/norm
-
-        # dF/dvperp
-        Fprime = np.gradient(Freduced, vperp)
-
-        # setup (k, vperp) grid for Bessel Jn-weighted moments of F(vperp)
-        kg      = self.k_vec   [...,np.newaxis]
-        vperpg  = vperp        [np.newaxis,...]
-        Fg      = Freduced     [np.newaxis,...]
-        Fprimeg = Fprime       [np.newaxis,...]
 
         for n in range(0, bessel_nmax+1):
 
@@ -334,8 +332,7 @@ class ESPerp_GradRho_Species(object):
 
     def cache_bessel_sums(self, verbose=True, with_prime=False,
                           with_bsum2=False, with_gradBdrift=False,
-                          Gforce=0,
-                          epsilonB=None, Freduced=None, vperp=None):
+                          epsilonB=None, Gforce=0):
         """
         Compute sums of Bessel J_n(...) integrals or I_n(...) terms which have
         already been pre-cached by the user, for use in electrostatic
@@ -363,7 +360,10 @@ class ESPerp_GradRho_Species(object):
                 drift into the resonant denominator,but using sqrt(<vperp^2>)
                 as a stand-in for vperp to avoid taking the full velocity-space
                 integral
-                if True, you must also provide epsilonB, Freduced, and vperp
+                if True, you must also provide epsilonB
+
+            epsilonB = (cm^-1) used for grad(B) drift calculation in the
+                resonant denominator
 
             Gforce = 0 or float, external force field acceleration (cm/s^2)
                 used here to add particle drift in resonant denominator.
@@ -379,9 +379,6 @@ class ESPerp_GradRho_Species(object):
                 TODO cleanup conventions --ATr,2025june26
 
                 Sign matters; positive G points along the +y axis.
-
-            epsilonB,Freduced,vperp = used for grad(B) drift calculation in the
-                resonant denominator
 
         Output:
             None, but the following class attributes are updated.
@@ -411,30 +408,16 @@ class ESPerp_GradRho_Species(object):
         bessel_F      = self.bessel_F     [..., np.newaxis, np.newaxis]
         bessel_Fprime_vpsq = self.bessel_Fprime_vpsq[..., np.newaxis, np.newaxis]
 
-        # construct complex omega on grid (k,Re(ω),Im(ω))
-        omr, omi = np.meshgrid(self.omega_re_vec, self.omega_im_vec, indexing='ij')
-        oo = omr + 1j*omi
-        oo = oo[np.newaxis,...]
-
-        # construct k on broadcastable grid (k,Re(ω),Im(ω))
-        kk = self.k_vec[:, np.newaxis, np.newaxis]
+        # (k, ω) grids of shape (k,Re(ω),Im(ω))
+        kk = self.kk
+        oo = self.oo
 
         if with_gradBdrift:
-            # TODO refactor all this logic by initing Freduced as class
-            # variable... --ATr,2025apr30
-            assert Freduced is not None
-            assert vperp is not None
-            assert Freduced.ndim == 1
-            assert vperp.ndim == 1
-            assert Freduced.shape == vperp.shape
-            # enforce normalization = 1
-            norm = np.trapz(Freduced * 2*np.pi*vperp, vperp)
-            Freduced = Freduced/norm
+            sp = self.species
             # use <vperp^2> to compute FLR drift velocity
-            vpsq_moment = np.trapz(Freduced * vperp**2 * 2*np.pi*vperp, vperp)
-            # rescale epsilonB from reference species normalization
-            # to current species normalization
-            epsB = epsilonB * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+            vpsq_moment = sp.moment( sp.vperp_vec**2 ) / sp.vth_perp**2
+            # rescale epsilonB from cm^-1 to current species normalization
+            epsB = epsilonB * self.species.rLs(B=self.B0)
             # remap omega -> omega + k*v_{del B}
             # which is safe to do throughout these bessel sums
             oo = oo + kk * (0.5*epsB*vpsq_moment)
@@ -540,32 +523,24 @@ class ESPerp_GradRho_Species(object):
         return
 
     # -------------------------------------------------------------------------
-    # Susceptibility
+    # Susceptibilities
     # -------------------------------------------------------------------------
 
-    def chi_perp_fluid(self, epsilon0, ns_n0, omp0_Omc0, warm=False):
+    def chi_fluid(self, epsilonN, ns, warm=False):
         """
         Compute susceptibility chi on grid (k, Re(ω), Im(ω)).
         Distribution function is either cold or warm Maxwellian.
         Inputs:
-            epsilon0 = signed gradient lengthscale, normalized to reference
-                       species Larmor radius
-            ns_n0 = density ratio
-            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
-            warm = apply thermal corrections from small-k Bessel sum expansions
+            epsilonN = signed density gradient lengthscale in cm^-1
+            ns = single-species number density in cm^-3
+            warm = use thermal corrections from small-k Bessel expansions
         """
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
-        eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
+        epsN = epsilonN * self.species.rLs(self.B0)
+        kk = self.kk  # scaled to species rho_Ls
+        oo = self.oo  # scaled to species Omega_cs
 
-        # scaled to species rho_Ls, Omega_cs already
-        # broadcasting is faster than meshgrid
-        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
-        kk = self.k_vec        [:, np.newaxis, np.newaxis]
-        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
-        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
-        oo = omr + 1j*omi
-
-        # notice that eps/k/omega has omega in denominator,
+        # notice that epsN/k/omega has omega in denominator,
         # unlike numerator placement in chi_kinetic(...)
         if warm:
             # the double expansion in small k*rhoLe and omega/Omce
@@ -574,13 +549,13 @@ class ESPerp_GradRho_Species(object):
             # in Lindgren, Langdon, Birdsall (1976), Equation (2) discussion.
             lamb = (kk**2)/2  # argument to modified Bessel I_n(...)
             term0 = omps_Omcs**2 * (1 - 3./4 * lamb)
-            term1 = -1 * omps_Omcs**2 * eps/kk/oo * (1 - lamb)
+            term1 = -1 * omps_Omcs**2 * epsN/kk/oo * (1 - lamb)
             return term0 + term1
         else:
-            term0 = omps_Omcs**2 * (1 - eps/kk/oo)
+            term0 = omps_Omcs**2 * (1 - epsN/kk/oo)
             return term0
 
-    def chi_perp_kinetic(self, epsilon0, ns_n0, omp0_Omc0):
+    def chi_kinetic(self, epsilonN, ns):
         """
         Compute susceptibility chi on grid (k, Re(ω), Im(ω)).
         Distribution function enters via Bessel sums.
@@ -591,73 +566,19 @@ class ESPerp_GradRho_Species(object):
         before you can compute kinetic chi.
 
         Inputs:
-            epsilon0 = signed gradient lengthscale, normalized to reference
-                       species Larmor radius
-            ns_n0 = density ratio
-            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
+            epsilonN = signed density gradient lengthscale in cm^-1
+            ns = single-species number density in cm^-3
         """
-        assert self.bsum0 is not None
-        assert self.bsum1 is not None
+        omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
+        epsN = epsilonN * self.species.rLs(self.B0)
+        kk = self.kk  # scaled to species rho_Ls
+        oo = self.oo  # scaled to species Omega_cs
 
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
-        eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
-
-        # scaled to species rho_Ls, Omega_cs already
-        # broadcasting is faster than meshgrid
-        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
-        kk = self.k_vec        [:, np.newaxis, np.newaxis]
-        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
-        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
-        oo = omr + 1j*omi
-
-        terms = self.bsum0 - eps*oo/kk * self.bsum0 - eps/kk * self.bsum1
+        terms = self.bsum0 - epsN*oo/kk * self.bsum0 - epsN/kk * self.bsum1
 
         return omps_Omcs**2 * terms
 
-    def chi_prll_Zfunc_lowk(self, epsilon0, ns_n0, omp0_Omc0, k_parallel):
-        """
-        Compute very simplified low-k limit of parallel susceptibility which
-        ... neglects all Bessel terms n>=1
-        ... takes J_0^2(...) = 1 limit as k->0.
-        ... uses Zfunc to assume Maxwellian distribution with temperature Ts
-        this allows a simple description of parallel Landau damping.
-
-        Inputs:
-            epsilon0 = signed gradient lengthscale, normalized to reference
-                       species Larmor radius
-            ns_n0 = density ratio
-            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
-            k_parallel = (scalar) signed parallel angular wavenumber,
-                         normalized to reference species Larmor radius.
-                         When choosing sign of k_parallel, remember that omega
-                         is scaled to SIGNED species cyclotron freq.
-        """
-        if epsilon0 != 0:
-            raise Exception("Error: gradient term not yet added to parallel chi")
-
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
-        #eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
-
-        # scaled to species rho_Ls, Omega_cs already
-        # broadcasting is faster than meshgrid
-        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
-        #kk = self.k_vec        [:, np.newaxis, np.newaxis]  # not needed for approximate parallel susceptibility
-        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
-        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
-        oo = omr + 1j*omi
-
-        # rescale to species rho_Ls
-        kp = k_parallel * (self.Ts_T0*self.ms_m0)**0.5 / abs(self.qs_q0)
-
-        # plasma function argument
-        zeta0s = oo / kp
-
-        # ratio of larmor radius to debye length for this species
-        rhoLs_lde = 2**0.5 * omps_Omcs
-
-        return 1./kp**2 * rhoLs_lde**2 * (1 + zeta0s * special.Zfunc(zeta0s))
-
-    def chi_oblique_Zfunc_lowk(self, epsilon0, ns_n0, omp0_Omc0, k_parallel):
+    def chi_oblique_Zfunc_lowk(self, epsilonN, ns, k_parallel):
         """
         Compute low-k limit of susceptibility chi on grid (k, Re(ω), Im(ω))
         for electrostatic waves, inhomogeneous plasma, Maxwellian distribution.
@@ -667,36 +588,28 @@ class ESPerp_GradRho_Species(object):
         allow a simple description of parallel Landau damping
 
         This method provides the combined perp+prll susceptibility response;
-        is designed to supersede previous use of "chi_prll_Zfunc_lowk" and
+        it supersedes previous use of "chi_prll_Zfunc_lowk" and
         "chi_perp_fluid" which was not exactly correct in a higher-order term.
 
         Inputs:
-            epsilon0 = signed gradient lengthscale, normalized to reference
-                       species Larmor radius
-            ns_n0 = density ratio
-            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
-            k_parallel = (scalar) signed parallel angular wavenumber,
-                         normalized to reference species Larmor radius.
+            epsilonN = signed density gradient lengthscale in cm^-1
+            ns = single-species number density in cm^-3
+            k_parallel = (scalar) signed parallel angular wavenumber in cm^-1
                          When choosing sign of k_parallel, remember that omega
-                         is scaled to SIGNED species cyclotron freq.
+                         is scaled to SIGNED species cyclotron freq in plasma
+                         dispersion function argument.
         """
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
-        eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
-
-        # scaled to species rho_Ls, Omega_cs already
-        # broadcasting is faster than meshgrid
-        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
-        kk = self.k_vec        [:, np.newaxis, np.newaxis]
-        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
-        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
-        oo = omr + 1j*omi
+        omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
+        epsN = epsilonN * self.species.rLs(self.B0)
+        kk = self.kk  # scaled to species rho_Ls
+        oo = self.oo  # scaled to species Omega_cs
 
         # rescale to species rho_Ls
-        kp = k_parallel * (self.Ts_T0*self.ms_m0)**0.5 / abs(self.qs_q0)
+        kp = k_parallel * self.species.rLs(self.B0)
         # plasma function argument
         zeta0s = oo / kp
         # plasma function evaluated
-        Z0 = special.Zfunc(zeta0s)
+        Z0 = Zfunc(zeta0s)
 
         kksq = kk**2
         # NOTE it is tacitly assumed that kperp/kk ~ 1 for the moment...
@@ -704,22 +617,22 @@ class ESPerp_GradRho_Species(object):
         #kperp = np.sqrt(kk**2 - kp**2)
 
         terms = omps_Omcs**2 * (
-            #kperp**2/kksq * (eps/kperp * Z0/kp - zeta0s*Z0)
-            (eps/kk * Z0/kp - zeta0s*Z0)
+            #kperp**2/kksq * (epsN/kperp * Z0/kp - zeta0s*Z0)
+            (epsN/kk * Z0/kp - zeta0s*Z0)
             + kp**2/kksq * 2./kp**2 * (1 + zeta0s*Z0)
         )
         # note that in the limit zeta0s->infty,
-        # we recover omps_Omcs**2 * (1 - eps/kk/oo) + ...
+        # we recover omps_Omcs**2 * (1 - epsN/kk/oo) + ...
         # like in chi_perp_fluid(...)
         return terms
 
     # -------------------------------------------------------------------------
-    # Derivaties of chi with respect to frequency omega, which can be used
+    # Derivatives of chi with respect to frequency omega, which can be used
     # when estimating complex roots in a weak growth approximation.
     # In practice, more useful to root find on the 3D (k, Re(ω), Im(ω)) grid.
     # -------------------------------------------------------------------------
 
-    def chi_perp_prime_kinetic(self, epsilon0, ns_n0, omp0_Omc0):
+    def chi_perp_prime_kinetic(self, epsilonN, ns):
         """
         Compute frequency-derivative of susceptibility, d(chi)/dω,
         on grid (k, Re(ω), Im(ω)).
@@ -734,57 +647,43 @@ class ESPerp_GradRho_Species(object):
         as of 2024 July 05, use at your own risk and be prepared to debug
         errors.
 
-        Derivative is taken as d/d(ω/Omega_c0) with respect to the REFERENCE
-        cyclotron frequency... therefore to convert between this
-        species + reference species you need a signed factor Omega_c0/Omega_cs
+        Derivative is taken as d/d(ω/Omega_cs) with respect to the current
+        species' cyclotron frequency... therefore to convert between this
+        species + reference species the caller should multiply result by a
+        signed factor Omega_c0/Omega_cs
         """
         assert self.bsum0 is not None
         assert self.bsum1 is not None
         assert self.bsum0p is not None
         assert self.bsum1p is not None
 
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
-        eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
+        epsN = epsilonN * self.species.rLs(self.B0)
+        kk = self.kk  # scaled to species rho_Ls
+        oo = self.oo  # scaled to species Omega_cs
 
-        Omc0_Omcs = self.ms_m0 / self.qs_q0  # signed
+        term0 = -epsN/kk * self.bsum0
+        term1 = (1 - epsN*oo/kk) * self.bsum0p
+        term2 = -1 * epsN/kk * self.bsum1p
 
-        # scaled to species rho_Ls, Omega_cs already
-        # broadcasting is faster than meshgrid
-        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
-        kk = self.k_vec        [:, np.newaxis, np.newaxis]
-        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
-        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
-        oo = omr + 1j*omi
+        return omps_Omcs**2 * (term0 + term1 + term2)
 
-        term0 = -eps/kk * self.bsum0
-        term1 = (1 - eps*oo/kk) * self.bsum0p
-        term2 = -1 * eps/kk * self.bsum1p
-
-        return omps_Omcs**2 * (term0 + term1 + term2) * Omc0_Omcs
-
-    def chi_perp_prime_fluid(self, epsilon0, ns_n0, omp0_Omc0):
+    def chi_perp_prime_fluid(self, epsilonN, ns):
         """
         Compute frequency-derivative of susceptibility, d(chi)/dω,
         on grid (k, Re(ω), Im(ω)) for a cold fluid.
 
-        Derivative is taken as d/d(ω/Omega_c0) with respect to the REFERENCE
+        Derivative is taken as d/d(ω/Omega_cs) with respect to the current
         cyclotron frequency... therefore to convert between this
-        species + reference species you need a signed factor Omega_c0/Omega_cs
+        species + reference species the caller should multiply result by a
+        signed factor Omega_c0/Omega_cs
         """
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
-        eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
+        epsN = epsilonN * self.species.rLs(self.B0)
+        kk = self.kk  # scaled to species rho_Ls
+        oo = self.oo  # scaled to species Omega_cs
 
-        Omc0_Omcs = self.ms_m0 / self.qs_q0  # signed
-
-        # scaled to species rho_Ls, Omega_cs already
-        # broadcasting is faster than meshgrid
-        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
-        kk = self.k_vec        [:, np.newaxis, np.newaxis]
-        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
-        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
-        oo = omr + 1j*omi
-
-        return omps_Omcs**2 * eps/kk/oo**2 * Omc0_Omcs
+        return omps_Omcs**2 * epsN/kk/oo**2
 
     # -------------------------------------------------------------------------
     # Same susceptibility functions, but take (ik,omega) as argument which
@@ -796,48 +695,44 @@ class ESPerp_GradRho_Species(object):
     # solve on approximate grid
     # -------------------------------------------------------------------------
 
-    def ikchi_perp_fluid(self, epsilon0, ns_n0, omp0_Omc0, ik, omega):
+    def ikchi_perp_fluid(self, epsilonN, ns, ik, omega):
         """
         Compute chi at one grid point in k, arbitrary complex omega.
         Inputs:
-            epsilon0 = signed gradient lengthscale, normalized to reference
-                       species Larmor radius
-            ns_n0 = density ratio
-            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
+            epsilonN = signed density gradient lengthscale in cm^-1
+            ns = single-species number density in cm^-3
             ik = index into instance attribute self.k_vec
-            omega = complex angular frequency
+            omega = complex angular frequency in rad/s
         """
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
-        eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
+        epsN = epsilonN * self.species.rLs(self.B0)
 
         kk = self.k_vec[ik]  # scaled to species rho_Ls already
-        oo = omega * self.ms_m0/self.qs_q0  # rescale to Omega_cs
+        oo = omega / self.species.Omcs(self.B0)  # rescale to Omega_cs
 
         # notice that eps/k/omega has omega in denominator,
         # unlike numerator placement in chi_kinetic(...)
-        return omps_Omcs**2 * (1 - eps/kk/oo)
+        return omps_Omcs**2 * (1 - epsN/kk/oo)
 
-    def ikchi_perp_kinetic(self, epsilon0, ns_n0, omp0_Omc0, ik, omega):
+    def ikchi_perp_kinetic(self, epsilonN, ns, ik, omega):
         """
         Compute chi at one grid point in k, arbitrary complex omega.
         You must first call
         self.cache_besselI_integrals(...) or cache_besselJ_integrals(...)
 
         Inputs:
-            epsilon0 = signed gradient lengthscale, normalized to reference
-                       species Larmor radius
-            ns_n0 = density ratio
-            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
+            epsilonN = signed density gradient lengthscale in cm^-1
+            ns = single-species number density in cm^-3
             ik = index into instance attribute self.k_vec
-            omega = complex angular frequency
+            omega = complex angular frequency in rad/s
         """
         assert self.bessel_Fprime is not None
         assert self.bessel_F is not None
 
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
-        eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
+        epsN = epsilonN * self.species.rLs(self.B0)
         kk = self.k_vec[ik]  # scaled to species rho_Ls already
-        oo = omega * self.ms_m0/self.qs_q0  # rescale to Omega_cs
+        oo = omega / self.species.Omcs(self.B0)  # rescale to Omega_cs
 
         # bessel indices
         nvec = np.arange(self.bessel_Fprime.shape[0])
@@ -849,60 +744,57 @@ class ESPerp_GradRho_Species(object):
         # handle n=0 term separately
         _bsum1 += 1./oo * self.bessel_F[0,ik]
 
-        terms = (1 - eps*oo/kk) * _bsum0 - eps/kk * _bsum1
+        terms = (1 - epsN*oo/kk) * _bsum0 - epsN/kk * _bsum1
 
         return omps_Omcs**2 * terms
 
-    def ikchi_perp_prime_fluid(self, epsilon0, ns_n0, omp0_Omc0, ik, omega):
+    def ikchi_perp_prime_fluid(self, epsilonN, ns, ik, omega):
         """
         Compute frequency-derivative of susceptibility, d(chi)/dω, at one grid
         point in k and at arbitrary complex omega, for a cold fluid.
 
-        Derivative is taken as d/d(ω/Omega_c0) with respect to the REFERENCE
+        Derivative is taken as d/d(ω/Omega_cs) with respect to the current
         cyclotron frequency... therefore to convert between this
-        species + reference species you need a signed factor Omega_c0/Omega_cs
+        species + reference species the caller should multiply result by a
+        signed factor Omega_c0/Omega_cs
 
         Inputs:
-            epsilon0 = signed gradient lengthscale, normalized to reference
-                       species Larmor radius
-            ns_n0 = density ratio
-            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
+            epsilonN = signed density gradient lengthscale in cm^-1
+            ns = single-species number density in cm^-3
             ik = index into instance attribute self.k_vec
-            omega = complex angular frequency
+            omega = complex angular frequency in rad/s
         """
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
-        eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
+        epsN = epsilonN * self.species.rLs(self.B0)
         kk = self.k_vec[ik]  # scaled to species rho_Ls already
-        oo = omega * self.ms_m0/self.qs_q0  # rescale to Omega_cs
+        oo = omega / self.species.Omcs(self.B0)  # rescale to Omega_cs
 
-        Omc0_Omcs = self.ms_m0 / self.qs_q0  # signed
-        return omps_Omcs**2 * eps/kk/oo**2 * Omc0_Omcs
+        return omps_Omcs**2 * epsN/kk/oo**2
 
-    def ikchi_perp_prime_kinetic(self, epsilon0, ns_n0, omp0_Omc0, ik, omega):
+    def ikchi_perp_prime_kinetic(self, epsilonN, ns, ik, omega):
         """
         Compute frequency-derivative of susceptibility, d(chi)/dω, at one grid
         point in k and at arbitrary complex omega.  You must first call
         self.cache_besselI_integrals(...) or cache_besselJ_integrals(...).
 
-        Derivative is taken as d/d(ω/Omega_c0) with respect to the REFERENCE
+        Derivative is taken as d/d(ω/Omega_cs) with respect to the current
         cyclotron frequency... therefore to convert between this
-        species + reference species you need a signed factor Omega_c0/Omega_cs
+        species + reference species the caller should multiply result by a
+        signed factor Omega_c0/Omega_cs
 
         Inputs:
-            epsilon0 = signed gradient lengthscale, normalized to reference
-                       species Larmor radius
-            ns_n0 = density ratio
-            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
+            epsilonN = signed density gradient lengthscale in cm^-1
+            ns = single-species number density in cm^-3
             ik = index into instance attribute self.k_vec
-            omega = complex angular frequency
+            omega = complex angular frequency in rad/s
         """
         assert self.bessel_Fprime is not None
         assert self.bessel_F is not None
 
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
-        eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
+        epsN = epsilonN * self.species.rLs(self.B0)
         kk = self.k_vec[ik]  # scaled to species rho_Ls already
-        oo = omega * self.ms_m0/self.qs_q0  # rescale to Omega_cs
+        oo = omega / self.species.Omcs(self.B0)  # rescale to Omega_cs
 
         # bessel indices
         nvec = np.arange(self.bessel_Fprime.shape[0])
@@ -919,17 +811,16 @@ class ESPerp_GradRho_Species(object):
         # handle n=0 term separately
         _bsum1p += -1/oo**2 * self.bessel_F[0,ik]
 
-        term0 = -eps/kk * _bsum0
-        term1 = (1 - eps*oo/kk) * _bsum0p
-        term2 = -1 * eps/kk * _bsum1p
-        Omc0_Omcs = self.ms_m0 / self.qs_q0  # signed
-        return omps_Omcs**2 * (term0 + term1 + term2) * Omc0_Omcs
+        term0 = -epsN/kk * _bsum0
+        term1 = (1 - epsN*oo/kk) * _bsum0p
+        term2 = -1 * epsN/kk * _bsum1p
+        return omps_Omcs**2 * (term0 + term1 + term2)
 
     # -------------------------------------------------------------------------
     # Experimental scheme to compute DCLC stability in a faster way
     # -------------------------------------------------------------------------
 
-    def chi_perp_kinetic_approx_An(self, n, omega_pin, epsilon0, ns_n0, omp0_Omc0):
+    def chi_perp_kinetic_approx_An(self, n, omega_pin, epsilonN, ns):
         """
         Compute coefficient A_n for APPROXIMATE Bessel terms organized in a new
         way, analogous to the dispersion structure of EBWs/IBWs in homogeneous
@@ -952,14 +843,14 @@ class ESPerp_GradRho_Species(object):
         Input:
             n = which bessel sum term to use
 
-            omega_pin = choose a constant value of omega to assume in the
+            omega_pin = choose a constant value of omega (in rad/s) to assume in the
                         coefficients, in order to simplify the omega
                         dependence of the problem at hand.
                         This is key to make the scheme work.
 
                         Example: to check stability within n=1 to n=2 cyclotron
-                        band, it is suggested to use omega_pin=1.5, but you can
-                        refine that guess if you wish.
+                        band, it is suggested to use omega_pin=1.5*Omega_cs,
+                        but you can refine that guess if you wish.
 
             rest = same arguments as for chi_kinetic(...) and chi_fluid(...)
         Output:
@@ -970,21 +861,21 @@ class ESPerp_GradRho_Species(object):
         assert self.bessel_F is not None
         assert n >= 1
 
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
-        eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
+        epsN = epsilonN * self.species.rLs(self.B0)
 
         # replace the usual 3D (k,Re(ω),Im(ω)) with a 1D grid in k,
         # because ω is fixed to user-chosen approximation
         kk = self.k_vec
-        oo = omega_pin * self.ms_m0 / self.qs_q0  # mimic norm of self.omega_re_vec
+        oo = omega_pin / self.species.Omcs(self.B0)  # rescale to Omega_cs
 
         An = 2 * omps_Omcs**2 * (
-            (1 - eps*oo/kk) * 1/kk**2 * (-1) * self.bessel_Fprime[n,...]
-            + eps*oo/kk * 1/n**2 * self.bessel_F[n,...]
+            (1 - epsN*oo/kk) * 1/kk**2 * (-1) * self.bessel_Fprime[n,...]
+            + epsN*oo/kk * 1/n**2 * self.bessel_F[n,...]
         )
         return An
 
-    def chi_perp_kinetic_approx_B(self, omega_pin, epsilon0, ns_n0, omp0_Omc0):
+    def chi_perp_kinetic_approx_B(self, omega_pin, epsilonN, ns):
         """
         Compute coefficient B for APPROXIMATE Bessel terms organized in a new
         way, analogous to the dispersion structure of EBWs/IBWs in homogeneous
@@ -1001,14 +892,14 @@ class ESPerp_GradRho_Species(object):
         grid of (k,Re(ω),Im(ω)).
 
         Input:
-            omega_pin = choose a constant value of omega to assume in the
+            omega_pin = choose a constant value of omega (in rad/s) to assume in the
                         coefficients, in order to simplify the omega
                         dependence of the problem at hand.
                         This is key to make the scheme work.
 
                         Example: to check stability within n=1 to n=2 cyclotron
-                        band, it is suggested to use omega_pin=1.5, but you can
-                        refine that guess if you wish.
+                        band, it is suggested to use omega_pin=1.5*Omega_cs,
+                        but you can refine that guess if you wish.
 
             rest = same arguments as for chi_kinetic(...) and chi_fluid(...)
         Output:
@@ -1018,22 +909,23 @@ class ESPerp_GradRho_Species(object):
         assert self.bessel_Fprime is not None
         assert self.bessel_F is not None
 
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
-        eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
+        epsN = epsilonN * self.species.rLs(self.B0)
 
         # replace the usual 3D (k,Re(ω),Im(ω)) with a 1D grid in k,
         # because ω is fixed to user-chosen approximation
         kk = self.k_vec
-        oo = omega_pin * self.ms_m0 / self.qs_q0  # mimic norm of self.omega_re_vec
+        oo = omega_pin / self.species.Omcs(self.B0)  # rescale to Omega_cs
 
         # only the n=0 bessel term is needed
-        B = omps_Omcs**2 * (-eps*oo/kk) * self.bessel_F[0,...]
+        B = omps_Omcs**2 * (-epsN*oo/kk) * self.bessel_F[0,...]
         # adjust for the normalization of 1/omega^2 factor in front
         # of definition of B/omega^2 in the full multi-species dispersion rel
-        B *= (self.qs_q0/self.ms_m0)**2
+        #B *= (self.qs_q0/self.ms_m0)**2  # TODO may break old code --ATr,2025oct13
+        raise Exception('fix me')
         return B
 
-    def chi_perp_fluid_approx_B(self, omega_pin, epsilon0, ns_n0, omp0_Omc0):
+    def chi_perp_fluid_approx_B(self, omega_pin, epsilonN, ns):
         """
         Like chi_kinetic_approx_B, but for cold fluid with J_0^2(...) -> 1.
 
@@ -1044,30 +936,27 @@ class ESPerp_GradRho_Species(object):
         #assert self.bessel_Fprime is not None
         #assert self.bessel_F is not None
 
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
-        eps = epsilon0 * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
+        epsN = epsilonN * self.species.rLs(self.B0)
 
         # replace the usual 3D (k,Re(ω),Im(ω)) with a 1D grid in k,
         # because ω is fixed to user-chosen approximation
         kk = self.k_vec
-        oo = omega_pin * self.ms_m0 / self.qs_q0  # mimic norm of self.omega_re_vec
+        oo = omega_pin / self.species.Omcs(self.B0)  # rescale to Omega_cs
 
         # only the n=0 bessel term is needed
-        B = omps_Omcs**2 * (-eps*oo/kk) # * self.bessel_F[0,...]
+        B = omps_Omcs**2 * (-epsN*oo/kk) # * self.bessel_F[0,...]
         # adjust for the normalization of 1/omega^2 factor in front
         # of definition of B/omega^2 in the full multi-species dispersion rel
-        B *= (self.qs_q0/self.ms_m0)**2
+        #B *= (self.qs_q0/self.ms_m0)**2  # TODO may break old code --ATr,2025oct13
+        raise Exception('fix me')
         return B
 
+    # -------------------------------------------------------------------------
+    # Susceptibilities with grad(B), finite-beta effects following Tang (1972)
+    # -------------------------------------------------------------------------
 
-class ESPerp_GradRho_GradB_Species(ESPerp_GradRho_Species):
-    """
-    Same but with Grad(B) and finite-beta effects following Tang (1972)
-    Need to merge codebase/logic into main class...
-    --ATr,2025april29
-    """
-
-    def chi_perp_fluid_tang(self, ns_n0, omp0_Omc0, epsilonN=0., epsilonB=0.):
+    def chi_perp_fluid_tang(self, ns, epsilonN=0., epsilonB=0.):
         """
         Compute cold-fluid electrostatic chi_{xx} on grid (k, Re(ω), Im(ω))
         with magnetic gradient effect, following Tang et al. (1972 Phys. Fluids).
@@ -1079,22 +968,15 @@ class ESPerp_GradRho_GradB_Species(ESPerp_GradRho_Species):
         Within the assumed background equilibrium, beta is contributed by all species.
 
         Inputs:
-            ns_n0 = species density ratio
-            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
-            epsilonN = density gradient (signed), scaled to reference species' (Larmor radius)^-1
-            epsilonB = magnetic gradient (signed), scaled to reference species' (Larmor radius)^-1
+            ns = single-species number density in cm^-3
+            epsilonN = density gradient (signed) in cm^-1
+            epsilonB = magnetic gradient (signed) in cm^-1
         """
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
-        epsN = epsilonN * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
-        epsB = epsilonB * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
-
-        # scaled to species rho_Ls, Omega_cs already
-        # broadcasting is faster than meshgrid
-        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
-        kk = self.k_vec        [:, np.newaxis, np.newaxis]
-        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
-        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
-        oo = omr + 1j*omi
+        omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
+        epsN = epsilonN * self.species.rLs(self.B0)
+        epsB = epsilonB * self.species.rLs(self.B0)
+        kk = self.kk  # scaled to species rho_Ls
+        oo = self.oo  # scaled to species Omega_cs
 
         # notice that eps/k/omega has omega in denominator,
         # unlike numerator placement in chi_kinetic(...)
@@ -1103,7 +985,9 @@ class ESPerp_GradRho_GradB_Species(ESPerp_GradRho_Species):
         term1 = (omps_Omcs**2 * (epsB - epsN)) / (kk*oo)
         return term0 + term1
 
-    def disp_EM_fluid_tang(self, ns_n0, omp0_Omc0, epsilonN=0., vth0_c=0.):
+    # TODO this function doesn't really belong here, because
+    # the vacuum electromagnetic term does not come from any one species
+    def disp_EM_fluid_tang(self, ns, epsilonN=0.):
         """
         Warm-fluid electromagnetic correction to the exactly-perpendicular
         electrostatic slab dispersion relation, as expressed by
@@ -1117,21 +1001,19 @@ class ESPerp_GradRho_GradB_Species(ESPerp_GradRho_Species):
         from multiple species.
 
         Inputs:
-            ns_n0 = species density ratio
-            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
-            epsilonN = density gradient (signed), scaled to reference species' (Larmor radius)^-1
-            vth0_c = thermal velocity of reference species, scaled to vacuum speed of light c
+            ns = single-species number density in cm^-3
+            epsilonN = signed density gradient lengthscale in cm^-1
         """
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
-        epsN = epsilonN * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
-        vts_c = vth0_c * (self.Ts_T0/self.ms_m0)**0.5
+        #omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
+        #epsN = epsilonN * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
+        #vts_c = vth0_c * (self.Ts_T0/self.ms_m0)**0.5
+        omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
+        epsN = epsilonN * self.species.rLs(self.B0)
+        epsB = epsilonB * self.species.rLs(self.B0)
+        kk = self.kk  # scaled to species rho_Ls
+        oo = self.oo  # scaled to species Omega_cs
 
-        # scaled to species rho_Ls, Omega_cs already
-        # broadcasting is faster than meshgrid
-        kk = self.k_vec        [:, np.newaxis, np.newaxis]
-        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
-        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
-        oo = omr + 1j*omi
+        vts_c = self.species.vth_perp() / CLIGHT
 
         term0 = omps_Omcs**4 * vts_c**2 / (kk*kk)
         # this factor has expanded (1 + C*epsilon)^2 ~ 1 + 2*C*epsilon
@@ -1140,7 +1022,7 @@ class ESPerp_GradRho_GradB_Species(ESPerp_GradRho_Species):
 
         return term0 + term1
 
-    def chi_perp_kinetic_PR1966(self, ns_n0, omp0_Omc0, Freduced, vperp):
+    def chi_perp_kinetic_PR1966(self, ns, Freduced, vperp):
         """
         Compute kinetic electrostatic chi_{xx} on grid (k, Re(ω), Im(ω))
         in the limit k >> 1 (normalized to species Larmor radius)
@@ -1160,37 +1042,17 @@ class ESPerp_GradRho_GradB_Species(ESPerp_GradRho_Species):
         i.e., F(vperp=0) != 0.
 
         Inputs:
-            ns_n0 = species density ratio
-            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
-            Freduced = 1D array of F(vperp)
-            vperp = 1D array of vperp sample points for Freduced,
-                    normalized to species thermal velocity v_th = sqrt(2*kB*Ts/ms)
-                    where Ts is a reference Maxwellian temperature
+            ns = single-species number density in cm^-3
         """
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
+        omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
+        kk = self.kk  # scaled to species rho_Ls
+        oo = self.oo  # scaled to species Omega_cs
 
-        # TODO REFACTOR THIS INTO MAIN SPECIES DEFINITION --ATr,2025april29
-        # Use this to help decide whether to use bessel I or bessel J.....
-        assert Freduced.ndim == 1
-        assert vperp.ndim == 1
-        assert Freduced.shape == vperp.shape
-        # enforce normalization = 1
-        # using the same integration scheme that will be used
-        # in all the subsequent Bessel-weighted integrals...
-        norm = np.trapz(Freduced * 2*np.pi*vperp, vperp)
-        Freduced = Freduced/norm
-        # dF/dvperp
-        Fprime = np.gradient(Freduced, vperp)
+        # dF/dvperp in species-specific dimensionless units
+        Fprime = np.gradient(self.Freduced, self.vperp)
         # inv_a_cubed is 1/a^3 where a \propto Larmor radius
         # for a maxwellian, 1/a^3 = -2*sqrt(pi)*(2*kB*Ts/ms)^(-3/2)
-        inv_a_cubed = np.trapz(Fprime/vperp * 2*np.pi, vperp)
-
-        # scaled to species rho_Ls, Omega_cs already
-        # broadcasting is faster than meshgrid
-        kk = self.k_vec        [:, np.newaxis, np.newaxis]
-        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
-        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
-        oo = omr + 1j*omi
+        inv_a_cubed = np.trapz(Fprime/self.vperp * 2*np.pi, self.vperp)
 
         # parentheses to try to be efficient/smart with the operations
         term0 = (omps_Omcs**2 * inv_a_cubed / kk**3) * (oo/np.tan(np.pi*oo))
@@ -1203,36 +1065,27 @@ class ESPerp_GradRho_GradB_Species(ESPerp_GradRho_Species):
         of beta... so probably unimportant, unless gradients are steep AND beta
         is large...
         """
-
         assert self.bsum0 is not None
         assert self.bsum1 is not None
         assert self.bsum2 is not None
 
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
-        epsN = epsilonN * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
-        epsB = epsilonB * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
-
-        # scaled to species rho_Ls, Omega_cs already
-        # broadcasting is faster than meshgrid
-        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
-        kk = self.k_vec        [:, np.newaxis, np.newaxis]
-        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
-        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
-        oo = omr + 1j*omi
+        omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
+        epsN = epsilonN * self.species.rLs(self.B0)
+        epsB = epsilonB * self.species.rLs(self.B0)
+        kk = self.kk  # scaled to species rho_Ls
+        oo = self.oo  # scaled to species Omega_cs
 
         terms = self.bsum0 - epsN*oo/kk * self.bsum0 - epsN/kk * self.bsum1
         terms += -0.5*(epsB/kk) * self.bsum2
 
         return omps_Omcs**2 * terms
 
+    # -------------------------------------------------------------------------
+    # Susceptibilities with external gravity and/or electric field, following
+    # Rosenbluth, Krall, Rostoker (1962)
+    # -------------------------------------------------------------------------
 
-class ESPerp_GradRho_Gforce_Species(ESPerp_GradRho_Species):
-    """
-    Same but with external gravitational and/or electric field, following
-    Rosenbluth, Krall, Rostoker (1962)
-    """
-
-    def chi_perp_kinetic_Gforce(self, ns_n0, omp0_Omc0, epsilonN=0., Gforce=0.):
+    def chi_perp_kinetic_Gforce(self, ns, epsilonN=0., Gforce=0.):
         """
         Similar to ESPerp_GradRho_Species.chi_perp_kinetic(...) but add extra
         terms to include drifts caused by an external force field.
@@ -1243,12 +1096,9 @@ class ESPerp_GradRho_Gforce_Species(ESPerp_GradRho_Species):
         before you can compute kinetic chi.
 
         Input:
-            ns_n0 = density ratio
+            ns = single-species number density in cm^-3
 
-            omp0_Omc0 = plasma/cyclotron frequency ratio for reference species
-
-            epsilonN = signed gradient lengthscale, normalized to reference
-                       species Larmor radius
+            epsilonN = signed density gradient lengthscale in cm^-1
 
             Gforce = 0 or float, external force field acceleration (cm/s^2).
                 Gforce is used for both gravity and external electric fields
@@ -1268,18 +1118,11 @@ class ESPerp_GradRho_Gforce_Species(ESPerp_GradRho_Species):
         assert self.bsum0 is not None
         assert self.bsum1 is not None
 
-        omps_Omcs = omp0_Omc0 * ns_n0**0.5 * self.ms_m0**0.5
-        # IMPORTANT: abs(qs_q0) is matched to abs(q) in k_vec normalization
-        epsN = epsilonN * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
-        #epsB = epsilonB * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
-
-        # scaled to species rho_Ls, Omega_cs already
-        # broadcasting is faster than meshgrid
-        #kk, omr, omi = np.meshgrid(self.k_vec, self.omega_re_vec, self.omega_im_vec, indexing='ij')
-        kk = self.k_vec        [:, np.newaxis, np.newaxis]
-        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
-        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
-        oo = omr + 1j*omi
+        omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
+        epsN = epsilonN * self.species.rLs(self.B0)
+        #epsB = epsilonB * self.species.rLs(self.B0)
+        kk = self.kk  # scaled to species rho_Ls
+        oo = self.oo  # scaled to species Omega_cs
 
         ## DCLC
         #terms = self.bsum0 - epsN*oo/kk * self.bsum0 - epsN/kk * self.bsum1
