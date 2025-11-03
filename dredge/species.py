@@ -30,6 +30,14 @@ class Species(object):
     # ----------------------------------------------------------
 
     @property
+    def m(self):
+        return self.mass
+
+    @property
+    def q(self):
+        return self.charge
+
+    @property
     def vth_perp(self):
         """
         Perpendicular thermal velocity in cm/s, with sqrt(2) factor
@@ -66,7 +74,7 @@ class Species(object):
         Larmor radius in cm, strictly non-negative
         Input: B = magnetic field in Gauss
         """
-        return self.vth_perp() / np.abs(self.Omcs(B))
+        return self.vth_perp / np.abs(self.Omcs(B))
 
     def c_omps(self, n):
         """
@@ -132,6 +140,8 @@ class KineticPerpVDFGrid(Species):
             vperp_vec in cm/s, 1D numpy array
             df_reduced in (cm/s)^(-2), 1D numpy array, normalized so that
                 \int F_{reduced} 2*pi*v_\perp d(v_\perp) = 1.
+                During initialization, df values will be adjusted to enforce
+                the normalization of 1.
         """
         super().__init__(mass, charge)
 
@@ -175,6 +185,8 @@ class KineticVDFGrid(Species):
             vprll_vec in cm/s, 1D numpy array
             df in (cm/s)^(-3), 2D numpy array, normalized so that
                 \int F_{reduced} 2*pi*v_\perp d(v_\perp) d(v_\parallel) = 1.
+                During initialization, df values will be adjusted to enforce
+                the normalization of 1.
         """
         super().__init__(mass, charge)
 

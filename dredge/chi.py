@@ -29,7 +29,7 @@ from .const import CLIGHT
 
 class WaveGrid(object):
 
-    def __init__(k_vec, omega_re_vec, omega_im_vec):
+    def __init__(self, k_vec, omega_re_vec, omega_im_vec):
         """
         Grid of (k, Re(ω), Im(ω)) for dispersion relation calculations
         Although code within this class appears to not care about (k, omega)
@@ -138,7 +138,8 @@ class WaveGrid(object):
 
 class SlabESPerp(object):
 
-    def __init__(grid: WaveGrid,
+    def __init__(self,
+                 grid: WaveGrid,
                  species: Species,
                  B0: float):
         """
@@ -181,7 +182,7 @@ class SlabESPerp(object):
 
         # dimensionless reduced distribution F(v_perp)
         try:
-            self.Freduced = species.df_reduced * species.vth_perp
+            self.Freduced = species.df_reduced * species.vth_perp**2
             self.vperp    = species.vperp_vec  / species.vth_perp
         except:
             self.Freduced = None
