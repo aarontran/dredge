@@ -163,7 +163,7 @@ class KineticPerpVDFGrid(Species):
         """
         if np.ndim(x) == 0:
             x = x * np.ones_like(self.df_reduced)
-        assert x.shape == self.df_reduced.shape
+        assert x.ndim == self.df_reduced.ndim
         return np.trapz(x * self.df_reduced * 2*np.pi*self.vperp_vec,
                         self.vperp_vec)
 
@@ -211,6 +211,6 @@ class KineticVDFGrid(Species):
         """
         if np.ndim(x) == 0:
             x = x * np.ones_like(self.df)
-        assert x.shape == self.df.shape
+        assert x.ndim == self.df.ndim
         mom_reduced = np.trapz(x * self.df, self.vprll_vec, axis=1)
         return np.trapz(mom_reduced * 2*np.pi*self.vperp_vec, self.vperp_vec)

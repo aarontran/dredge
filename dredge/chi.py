@@ -13,7 +13,7 @@ from datetime import datetime
 from scipy.interpolate import RegularGridInterpolator
 
 from .special import Zfunc
-from .species import Species
+from .species import Species, KineticVDFGrid
 from .const import CLIGHT
 
 # beware... changing temperature, mass, charge,
@@ -1136,3 +1136,215 @@ class SlabESPerp(object):
         terms = self.bsum0 - epsN*oo/kk * self.bsum0 - (epsN + 2*Gforce)/kk * self.bsum1
 
         return omps_Omcs**2 * terms
+
+
+class BounceAvgESPerp(object):
+
+    def __init__(self,
+                 grid: WaveGrid,
+                 species: KineticVDFGrid,
+                 Bx_vec: np.ndarray,
+                 By_vec: np.ndarray,
+                 Bz_vec: np.ndarray,
+                 r_vec: np.ndarray,
+                 z_vec: np.ndarray,
+    ):
+        """
+        Susceptibility for perpendicular electrostatic waves in a paraxial
+        mirror plasma, computed for one species on a grid of (k, Re(ω), Im(ω)).
+
+        Coordinate scheme (at midplane):
+        * k points along x (poloidal)
+        * grad(n) points along y, so epsilon = dn/dy (radial)
+        * magnetic field points along z (toroidal)
+        * Electron diamagnetic drift towards +k, ion towards -k for epsilon > 0
+
+        Inputs:
+            grid = dredge.chi.WaveGrid(...) instance
+            species = dredge.species.Species(...) instance
+            Bx_vec = magnetic field Cartesian x-component in Gauss (CGS units)
+            By_vec = magnetic field Cartesian y-component in Gauss (CGS units)
+            Bz_vec = magnetic field Cartesian z-component in Gauss (CGS units)
+            r_vec = r-coordinate positions (cm) for B field on flux surface
+            z_vec = z-coordinate positions (cm) for B field on flux surface
+                    must be monotonically ascending,
+                    must have z=0. as the first point in array.
+        """
+        self.grid = grid
+        self.species = species
+
+        # -----------------------
+        # for bounce-averaging
+
+        # KEEP UNITS ATTACHED!!!!!! TODO fix dimensionlessness
+        self.Bx_vec = Bx_vec
+        self.By_vec = By_vec
+        self.Bz_vec = Bz_vec
+        self.Bmag_vec = (Bx_vec**2 + By_vec**2 + Bz_vec**2)**0.5
+        self.r_vec = r_vec
+        self.z_vec = z_vec
+
+        # TODO we need grad(Bmag) vector along this flux tube as well
+        # --ATr,2025november03
+
+        assert self.z_vec[0] == 0.
+        assert np.all(np.diff(self.z_vec) > 0)
+
+        # compute arc length along the curve,
+        # needed for bounce-average integral
+        dl = (np.diff(r_vec)**2 + np.diff(z_vec)**2)**0.5
+        dr_dl = np.diff(r_vec) / dl
+        dz_dl = np.diff(z_vec) / dl
+        ds_dl = (dr_dl**2 + dz_dl**2)**0.5
+        self.s_vec = np.cumsum(ds_dl * dl)  # integrate along arc
+        self.s_vec = np.insert(self.s_vec, 0, 0.)  # start at s=0
+
+        kws = dict(bounds_error=True)#, **kwargs)  # TODO make more flexible -ATr,2025nov03
+        self.Bx_interp = RegularGridInterpolator((self.s_vec,), self.Bx_vec, **kws)
+        self.By_interp = RegularGridInterpolator((self.s_vec,), self.By_vec, **kws)
+        self.Bz_interp = RegularGridInterpolator((self.s_vec,), self.Bz_vec, **kws)
+        self.Bmag_interp = RegularGridInterpolator((self.s_vec,), self.Bmag_vec, **kws)
+
+        # B field must be monotonic for this to work
+        assert np.all(np.diff(self.Bmag_vec) >= 0.) or np.all(np.diff(self.Bmag_vec) <= 0.)
+        self.s_interp = RegularGridInterpolator((self.Bmag_vec,), self.s_vec, **kws)
+
+        # get midplane magnetic field
+        #Bx0, By0, Bz0 = self.Bxyzinterp([0.])[:,0]  # unpack numpy array
+        #self.B0 = (Bx0**2 + By0**2 + Bz0**2)**0.5
+        self.B0 = self.Bmag_interp([0.])
+
+        # ------------------------------------------
+        # internal code works in dimensionless units
+        # charge sign is not used for k rescaling,
+        # but charge sign is included in Omega_{cs}
+        self.k_vec        = grid.k_vec        * self.species.rLs (B = self.B0)
+        self.omega_re_vec = grid.omega_re_vec / self.species.Omcs(B = self.B0)
+        self.omega_im_vec = grid.omega_im_vec / self.species.Omcs(B = self.B0)
+
+        return
+
+    def query_Bmag_at(self, s_points):
+        # broadcasts over input array dimensions
+        points = np.asarray(s_points)[...,np.newaxis]
+        return self.Bmag_interp(points)
+
+    def query_s_at(self, B_points):
+        # broadcasts over input array dimensions
+        points = np.asarray(B_points)[...,np.newaxis]
+        return self.s_interp(points)
+
+#    def Bxyzinterp(self, s_points):
+#        """
+#        Query B-field vector at one or multiple positions along flux surface
+#        Input:
+#            s_points : arc length in cm, np.ndarray with ndim=1
+#            **kwargs : passed to scipy's RegularGridInterpolator
+#        Returns:
+#            B : np.ndarray with shape (3, len(z))
+#        """
+#        ## TODO DO WE REALLY NEED THIS?
+#        ## Maybe better to integrate directly using the user-supplied points;
+#        ## then if better resolution demanded, user responsible for providing
+#        ## finer grained B-field... -ATr,2025oct14
+#        assert np.ndim(s_points) == 1
+#        Bx = Bxintp(s_points)
+#        By = Byintp(s_points)
+#        Bz = Bzintp(s_points)
+#        return np.array([Bx, By, Bz])
+
+    def setup_bounce_average(self, NS_RESOLUTION=500):
+        """
+        Prepare intermediate variables for bounce averaging
+        ALL VARIABLES IN DIMENSIONFUL (CGS) UNITS
+        """
+        sp = self.species
+        vperp, vprll = np.meshgrid(sp.vperp_vec, sp.vprll_vec, indexing='ij')
+        # compute (E,mu) on grid to do the bounce average
+        # and construct useful variables
+        E = 0.5*sp.mass*(vperp**2 + vprll**2)
+        mu = 0.5*sp.mass*vperp**2 / self.B0
+
+        # segment the velocity phase space regions
+        trapped = mu*np.amax(self.Bmag_vec) > E
+        passing = np.logical_not(trapped)
+
+        # turning point for all trapped particles
+        Bturn = np.empty_like(E)
+        Bturn[mu != 0.] = E[mu!=0.] / mu[mu!=0.]
+        Bturn[mu == 0.] = np.amin(self.Bmag_vec)  # avoid divide-by-zero
+        Bturn[passing] = np.amax(self.Bmag_vec)
+        # must enforce Bturn strictly within
+        # B_vec range for interpolation;
+        # when vprll = 0, E/mu can be < min(B_vec)
+        # due to numerical imprecision.
+        Bturn = np.minimum(Bturn, np.amax(self.Bmag_vec))
+        Bturn = np.maximum(Bturn, np.amin(self.Bmag_vec))
+        # get bounce-average integral upper limit
+        sturn = self.query_s_at(Bturn)
+
+        # construct (s, B(s)) integration values at STAGGERED positions!!!!
+        # which should increase the accuracy of integration...
+        ssamp = np.empty((NS_RESOLUTION, sp.vperp_vec.size, sp.vprll_vec.size),
+                          dtype=np.float64)
+        Bsamp = np.empty_like(ssamp)
+        for ii in range(sp.vperp_vec.size):
+            for jj in range(sp.vprll_vec.size):
+                ssamp_loc = np.linspace(self.s_vec[0], sturn[ii,jj],
+                                         NS_RESOLUTION+1)
+                ssamp_loc = ssamp_loc[:-1] + 0.5*np.diff(ssamp_loc)  # offset to get cell centers
+                ssamp[:,ii,jj] = ssamp_loc
+                Bsamp[:,ii,jj] = self.query_Bmag_at(ssamp_loc)
+
+        self.E = E  # (vperp,vprll) grid
+        self.mu = mu  # (vperp,vprll) grid
+        self.trapped = trapped  # (vperp,vprll) grid  # useful for viz, not needed For integral
+        self.passing = passing  # (vperp,vprll) grid  # useful for viz, not needed For integral
+        self.Bturn = Bturn  # (vperp,vprll) grid  # useful for viz, not needed For integral
+        self.sturn = sturn  # (vperp,vprll) grid
+        self.ssamp = ssamp  # (NS_RESOLUTION,vperp,vprll) grid
+        self.Bsamp = Bsamp  # (NS_RESOLUTION,vperp,vprll) grid
+
+        # used to normalize bounce integral.
+        # to be honest, the user should probably call this with
+        # whatever integration method they want....
+        self.tbounce4th = self.bounce_average(
+            x = np.ones_like(ssamp),
+            norm = False,
+        )
+        return
+
+    def bounce_average(self, x, norm=True):#, method='trapz'):#, EPS_FUDGE=1e-4):
+        """
+        Average over one-fourth(!) of an orbit for trapped particles,
+        average over one-half for passing particles
+
+        Input:
+            x = shape (s, vperp, vprll)
+        Return:
+            shape (vperp, vprll)
+        """
+        sp = self.species
+        assert x.shape == self.ssamp.shape
+
+        # FOLLOWING CALCULATIONS ARE ALL DIMENSIONFUL
+        # TODO convert to dimensionless -ATr,2025nov03
+
+        try:
+            E = self.E[np.newaxis,...]  # should be shallow copy
+            mu = self.mu[np.newaxis,...]
+            ssamp = self.ssamp  # (NS_RESOLUTION,vperp,vprll) grid
+            Bsamp = self.Bsamp  # (NS_RESOLUTION,vperp,vprll) grid
+        except:
+            print("ERROR: need to call prepare_bounce_average(...)")
+            raise
+
+        result = np.empty_like(E)
+
+        # assume all grids are (s, vperp, vprll)
+        integrand = x / ( 2*(E - mu*Bsamp)/sp.mass )**0.5
+        result = np.trapz(integrand, ssamp, axis=0)
+        if norm:
+            result /= self.tbounce4th
+
+        return result
