@@ -67,6 +67,9 @@ Philosophy: human time is costly, computer time and memory is cheap, so use
 simple, easy-to-debug, brute force methods whenever possible (except in
 time-sensitive pieces of code).
 
+Follow [Google's Python style guide](https://google.github.io/styleguide/pyguide.html),
+flexibly.
+
 Thanks to:
 * Xinyi Guo for a parallel EM dispersion solver, pieces of which were spun off
   over the years and informed the design of this code
