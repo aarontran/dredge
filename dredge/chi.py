@@ -1222,6 +1222,18 @@ class BounceAvgESPerp(object):
         self.omega_re_vec = grid.omega_re_vec / self.species.Omcs(B = self.B0)
         self.omega_im_vec = grid.omega_im_vec / self.species.Omcs(B = self.B0)
 
+        # calculation breaks at resonant denominators
+        # when omega exactly equal to cyclotron harmonics
+        # so ensure we only sample non-integer values
+        assert np.all(self.omega_re_vec.astype(np.int64) != self.omega_re_vec)
+
+        # grids for broadcasting, faster than np.meshgrid(...)
+        kk  = self.k_vec       [:, np.newaxis, np.newaxis]
+        omr = self.omega_re_vec[np.newaxis, :, np.newaxis]
+        omi = self.omega_im_vec[np.newaxis, np.newaxis, :]
+        self.kk = kk
+        self.oo = omr + 1j*omi
+
         return
 
     def query_Bmag_at(self, s_points):
@@ -1253,10 +1265,16 @@ class BounceAvgESPerp(object):
 #        Bz = Bzintp(s_points)
 #        return np.array([Bx, By, Bz])
 
-    def setup_bounce_average(self, NS_RESOLUTION=500):
+    def setup_bounce_average(self, NS_RESOLUTION=500, TBOUNCE4TH_MAX = 1e99):
         """
         Prepare intermediate variables for bounce averaging
         ALL VARIABLES IN DIMENSIONFUL (CGS) UNITS
+        Inputs:
+             tbounce4th_max = maximum possible value for tbounce4th to avoid
+                NaNs... only really necessary for vprll=0 and vperp=0
+                bounce time will be pinned to max(tbounce) anywhere on grid
+                    (usually neighboring points) or tbounce4th_max, whichever
+                    is less.
         """
         sp = self.species
         vperp, vprll = np.meshgrid(sp.vperp_vec, sp.vprll_vec, indexing='ij')
@@ -1265,14 +1283,22 @@ class BounceAvgESPerp(object):
         E = 0.5*sp.mass*(vperp**2 + vprll**2)
         mu = 0.5*sp.mass*vperp**2 / self.B0
 
+        # save configuration param
+        self.TBOUNCE4TH_MAX = TBOUNCE4TH_MAX
+
         # segment the velocity phase space regions
         trapped = mu*np.amax(self.Bmag_vec) > E
         passing = np.logical_not(trapped)
+        # need to deal with special case of mu=0, call it passing
+        # even for mu=0 and E=0  # TODO can handle more elegantly?  -ATr,2025nov06
+        trapped[ mu == 0 ] = False
+        passing[ mu == 0 ] = True
+        assert np.all(np.logical_or(trapped, passing))
 
         # turning point for all trapped particles
         Bturn = np.empty_like(E)
         Bturn[mu != 0.] = E[mu!=0.] / mu[mu!=0.]
-        Bturn[mu == 0.] = np.amin(self.Bmag_vec)  # avoid divide-by-zero
+        Bturn[mu == 0.] = np.amax(self.Bmag_vec)  # avoid divide-by-zero; mu=0 is always pasing except for singularity at origin
         Bturn[passing] = np.amax(self.Bmag_vec)
         # must enforce Bturn strictly within
         # B_vec range for interpolation;
@@ -1317,7 +1343,7 @@ class BounceAvgESPerp(object):
     def bounce_average(self, x, norm=True):#, method='trapz'):#, EPS_FUDGE=1e-4):
         """
         Average over one-fourth(!) of an orbit for trapped particles,
-        average over one-half for passing particles
+        which is equivalent to one-half for passing particles.
 
         Input:
             x = shape (s, vperp, vprll)
@@ -1325,7 +1351,8 @@ class BounceAvgESPerp(object):
             shape (vperp, vprll)
         """
         sp = self.species
-        assert x.shape == self.ssamp.shape
+        assert x.shape[0] == self.ssamp.shape[0]
+        assert len(x.shape) == 3
 
         # FOLLOWING CALCULATIONS ARE ALL DIMENSIONFUL
         # TODO convert to dimensionless -ATr,2025nov03
@@ -1341,10 +1368,271 @@ class BounceAvgESPerp(object):
 
         result = np.empty_like(E)
 
-        # assume all grids are (s, vperp, vprll)
-        integrand = x / ( 2*(E - mu*Bsamp)/sp.mass )**0.5
-        result = np.trapz(integrand, ssamp, axis=0)
+        # NOTE: the limit vprll -> 0 requires some care to handle singularity
+        # Got it with help from ChatGPT, for the case of B''(s=0) nonzero...
+        # For case of B''(s=0) zero, B''''(s=0) nonzero, then I need to
+        # retrace the singularity-handling procedure...
+        # WARNING it still breaks at vperp_vec -> 0
+        # --ATr,2025nov06
+        pitch90 = (sp.vprll_vec == 0)
+        if np.any(pitch90):
+            # TODO cleanup the warnings by handling casewise
+            # --ATr,2025nov06
+
+            # assume all grids are (s, vperp, vprll)
+            integrand = x / ( 2*(E - mu*Bsamp)/sp.mass )**0.5
+            result = np.trapz(integrand, ssamp, axis=0)
+
+            # limiting form of bounce-average integral near the singularity,
+            # valid for the case x=1, but TODO MAY NOT BE CORRECT FOR x(s)
+            # spatially varying........ --ATr,2025nov06
+            # MIGHT NEED HIGHER ORDER EDGE STENCILS FOR THIS.
+            dB_ds2 = np.gradient(np.gradient(self.Bmag_vec, self.s_vec, edge_order=2),
+                                 self.s_vec, edge_order=2)
+            if x.shape[2] == self.ssamp.shape[2]:  # computed x on full v_parallel grid
+                result[:, pitch90] = (
+                    (x[0])[:,pitch90]  # cannot use [0,:,pitch90] b/c mixing selector functions
+                    * np.pi/2 * (sp.mass / dB_ds2[0])**0.5 / (self.mu[:,pitch90])**0.5
+                )
+            elif x.shape[2] == 1:  # x is independent of v_parallel, we broadcast along coordinate
+                assert np.where(pitch90)[0].size == 1
+                jj = np.where(pitch90)[0][0]  # index explicitly to make code nicer
+                # TODO handle ugly divide by zero warning -ATr,2025nov06
+                result[:, jj] = (
+                    x[0,:,0]
+                    * np.pi/2 * (sp.mass / dB_ds2[0])**0.5 / (self.mu[:,jj])**0.5
+                )
+            else:
+                raise Exception('got bad x shape {}'.format(x.shape))
+        else:
+            # assume all grids are (s, vperp, vprll)
+            integrand = x / ( 2*(E - mu*Bsamp)/sp.mass )**0.5
+            result = np.trapz(integrand, ssamp, axis=0)
+
         if norm:
             result /= self.tbounce4th
 
+        # handle the zero point specially
+        # important that this comes AFTER the "nominal" norm factor is applied
+        # TODO cleanup warning messages related to this!!!!! --ATr,2025nov06
+        muzero = (sp.vperp_vec == 0)
+        if np.any(pitch90) and np.any(muzero):
+            assert np.where(muzero)[0].size == 1
+            assert np.where(pitch90)[0].size == 1
+            ii = np.where(muzero)[0][0]
+            jj = np.where(pitch90)[0][0]
+
+            # handle broadcasting cases
+            # TODO ugly ugly ugly -ATr,2025nov06
+            if x.shape[1] == self.ssamp.shape[1] and x.shape[2] == self.ssamp.shape[2]:
+                x_singular = x[0,ii,jj]
+            elif x.shape[1] == 1                 and x.shape[2] == self.ssamp.shape[2]:
+                x_singular = x[0,0,jj]
+            elif x.shape[1] == self.ssamp.shape[1] and x.shape[2] == 1:
+                x_singular = x[0,ii,0]
+            elif x.shape[1] == 1                   and x.shape[2] == 1:
+                x_singular = x[0,0,0]
+            else:
+                raise Exception('got bad x shape {}'.format(x.shape))
+
+            if norm:
+                # force to the moment's value at s=0 at singular point??
+                result[ii,jj] = x_singular
+                print('forcing result to singular value', x_singular)  # TODO DEBUG
+            else:
+                # raw calculation of bounce integral which blows up
+                # which I currently only use to obtain the bounce time with x=1
+                if x_singular == 1.:
+                    # we are calculating the bounce time
+                    # so just look for max bounce time on grid which should be
+                    # from adjoining cells on (vperp,vprll) mesh
+                    rmax = np.amax( result[ np.isfinite(result) ] )
+                    result[ii,jj] = min(self.TBOUNCE4TH_MAX, rmax)
+                else:
+                    # explicitly get neighboring cells
+                    # vperp=0 is assumed to be the smallest point on mesh
+                    assert ii == 0
+                    # can we safely index into neighboring points on vprll mesh?
+                    assert jj > 0 and jj < len(self.sp.vprll_vec)-1
+                    # TODO stupid stupid hack --ATr,2025nov06
+
+                    # when passing in x != 0, it could have arbitrary
+                    # dependence on (s,vperp,vprll) so we don't know where the
+                    # maximum lives
+                    # THEREFORE, cannot use max(Result) like before
+                    # we need to look at the neighboring cells in velocity space
+                    # instead.  I am not sure if i am weighting correctly.
+
+                    # I don't expect to use this code branch alot because
+                    # usually, when computing bounce averages, we divide out
+                    # the normalization.
+                    # I think my hacky fix / ceiling should work, but there's
+                    # no physics-motivated reason to use it.
+                    # expect it may only be used during debugging
+
+                    xmax_neighbor = np.amax([  # don't use nanmax b/c if you get nan, something is wrong
+                            x[0,ii,  jj-1],  # left in vprll axis
+                            x[0,ii,  jj+1],  # right in vprll axis
+                            x[0,ii+1,jj  ],  # up in vperp axis
+                            x[0,ii+1,jj-1],  # diagonal up left
+                            x[0,ii+1,jj+1],  # diagonal up right
+                    ])
+                    rmax_neighbor = np.amax([  # don't use nanmax b/c if you get nan, something is wrong
+                            result[ii,  jj-1],  # left in vprll axis
+                            result[ii,  jj+1],  # right in vprll axis
+                            result[ii+1,jj  ],  # up in vperp axis
+                            result[ii+1,jj-1],  # diagonal up left
+                            result[ii+1,jj+1],  # diagonal up right
+                    ])
+                    result[ii,jj] = xmax_neighbor * min(self.TBOUNCE4TH_MAX,
+                                                        rmax_neighbor/xmax_neighbor)
+                    raise Exception('this code branch should only be used for debugging -ATr,2025nov06')
+
         return result
+
+    def chi_GK(self, epsilonN, ns, gforce):
+        """
+        Compute gyro-averaged, GK-ordered susceptibility for exactly
+        perpendicular electrostatic waves
+
+        Input:
+            epsilonN = signed density gradient in cm^-1 at midplane z=0
+            ns = single-species number density in cm^-3 at midplane z=0
+            gforce = external acceleration (cm/s^2); positive g points along +y axis
+        """
+        sp = self.species
+        omps_Omcs = sp.omps(ns) / sp.Omcs(self.B0)
+        epsN = epsilonN * sp.rLs(self.B0)
+        kk = self.kk  # scaled to species rho_Ls
+        oo = self.oo  # scaled to species Omega_cs
+        # EXTEND to (vperp, vprll; k, Re(omega), Im(omega)) grid
+        # for broadcasting integral
+        kk5d = kk[np.newaxis, np.newaxis, ...]  # scaled to species rho_Ls
+        oo5d = oo[np.newaxis, np.newaxis, ...]  # scaled to species Omega_cs
+        assert kk5d.ndim == 5
+        assert oo5d.ndim == 5
+
+        # ------------------------------------------
+        # start preparing pieces of velocity-space integral
+
+        # Convention: array shape like (s, vperp, vprll, k, Re(om), Im(om))
+        # Integrate over (s, vperp, vprll) in order to evaluate susceptibility,
+        # leaving only a 3D array.
+        # Be strategic about what arrays to broadcast.
+
+        # WARNING: BELOW ASSUMES species is KineticVDFGrid(...)
+        # Chain rule:
+        # df/dE |_{\mu} = df/d(v_\prll) |_{v_\perp} * d(v_\prll)/dE |_{\mu}.
+        # The df/d(v_\perp) term vanished because d(v_\perp)/dE |_{\mu} = 0.
+        df0_dvprll  = np.gradient(sp.df,      sp.vprll_vec, axis=1)
+        df0_dvprll2 = np.gradient(df0_dvprll, sp.vprll_vec, axis=1)
+
+        pitch90 = (sp.vprll_vec == 0)
+        if np.any(pitch90):
+            # at vprll=0, df/dvprll -> 0 by symmetry, but dE/dvprll -> 0
+            # gives an indeterminate limit; apply l'Hopital's rule to bypass
+            df0_dE = np.empty_like(sp.df)
+            df0_dE[:,pitch90] = df0_dvprll2[:,pitch90] / sp.m
+            df0_dE[:,~pitch90] = ( df0_dvprll[:,~pitch90]
+                                   / (sp.m * sp.vprll_vec[np.newaxis,~pitch90]) )
+        else:
+            df0_dE = df0_dvprll * 1/(sp.m * sp.vprll_vec)
+        # effective temperature in ergs (CGS unit)
+        Teff = sp.df / df0_dE
+        # normalized
+        Teff /= (sp.m * sp.vth_perp**2)
+
+        # EXTEND to (vperp, vprll; k, Re(omega), Im(omega)) grid
+        # for broadcasting
+        df0 = sp.df[...,np.newaxis,np.newaxis,np.newaxis] * sp.vth_perp**3
+        Teff = Teff[...,np.newaxis,np.newaxis,np.newaxis]
+        assert df0.ndim == 5
+        assert df0.shape == Teff.shape
+
+        # diamagnetic drift frequency
+        # is bounce-average invariant, within our approximation
+        omega_star = kk5d * epsN * Teff  # function of (vperp, vprll, k)
+
+        # bounce-averaged gyrocenter drift frequency
+        # need to compute on grid of (s, vperp, vprll),
+        # integrate over s, then multiply by k
+
+        # QUICK HACK -- NO MAGNETIC FIELD CURVATURE YET
+        # just include gforce and allow for arbitrary temperature and F(...)
+        v_drift = np.ones( (self.ssamp.shape[0],), dtype=np.float64)
+        v_drift *= gforce/(sp.vth_perp * sp.Omcs(self.B0))
+        # TODO include the grad(B) and curvature(B) effects
+        v_drift = v_drift[...,np.newaxis,np.newaxis]  # (s, vperp, vprll) shape
+
+        print('debug shape   v_drift',  v_drift.shape)
+        print('debug any nan v_drift',  np.any( np.isnan( v_drift )) )
+        print('debug all nan v_drift',  np.all( np.isnan( v_drift )) )
+
+        v_BAD = self.bounce_average(v_drift, norm=True)  # (vperp, vprll) shape
+
+        print('debug shape   v_BAD',  v_BAD.shape)
+        print('debug any nan v_BAD',  np.any( np.isnan( v_BAD )) )
+        print('debug all nan v_BAD',  np.all( np.isnan( v_BAD )) )
+        print('ratio of NaN', np.where(np.isnan( v_BAD ))[0].size / v_BAD.size )
+        print('where NaN', np.where(np.isnan( v_BAD )) )
+
+        omega_d = kk5d * v_BAD[...,np.newaxis,np.newaxis,np.newaxis]  # (vperp,vprll, k,Re(omega),Im(omega))
+
+        # -------------------------------------------
+        # to make integral tractable,
+        # expand the 1/(omega - omega_drift) term
+        # handling both cases of omega_d/omega << 1 and >> 1 separately...
+        #
+        # to approximate 1/(1-x)...
+        # when x < 1, use 1+x+x^2+x^3
+        # when x > 1, use -1/x*(1+1/x+1/x^2+1/x^3)
+        # for the case x = -1, we should use np.inf
+        #
+        # PROBLEM is omega_d depends on velocity space and k,
+        # so we still end up with a 5D loop...
+        # for every omega, scan velocity space
+            # for every velocity space point
+            #   omega_d = whatever
+            #   if abs(omega/omega_d) < 1 use one approx forchi
+            #   if abs(omega/omega_d) > 1 use another approx for chi
+            #   if abs(omega/omega_d) == 1 use np.inf
+        # -------------------------------------------
+
+        # TEMPORARY RESOLUTION
+        # only consider the case of omega_d/omega << 1
+
+        df0_Teff = df0/Teff  # 5D array
+        invoo = 1./oo  # 3D array use outside VDF integral
+
+        def _bmoment(x):
+            """bmoment = broadcasted and dimensionless moment integral"""
+            assert x.ndim == 5
+            # use same velocity norm on both VDF coodinate axes,
+            # but keep 1D coordinate shape for moment integration
+            vperp_vth = sp.vperp_vec / sp.vth_perp
+            vprll_vth = sp.vprll_vec / sp.vth_perp
+            # STUPID BROADCASTING HACKERY
+            vprll_vth = vprll_vth[np.newaxis, :, np.newaxis,np.newaxis,np.newaxis]
+            vperp_vth = vperp_vth[ :, np.newaxis,np.newaxis,np.newaxis]
+            # compute the moment
+            mom_reduced = np.trapz(x * df0, np.squeeze(vprll_vth), axis=1)
+            return np.trapz(mom_reduced * 2*np.pi*vperp_vth, np.squeeze(vperp_vth), axis=0)
+
+        # TODO moment function hackery to deal with general dimensions
+        # but if I adopt a consistent array shape convention throughout code
+        # that may be more useful
+        mom = np.zeros((self.k_vec.size,
+                        self.omega_re_vec.size,
+                        self.omega_im_vec.size), dtype=np.complex128)
+        mom += _bmoment( df0_Teff                              )
+        mom += _bmoment( df0_Teff * (-omega_star             ) ) * invoo
+        mom += _bmoment( df0_Teff * (              omega_d   ) ) * invoo
+        mom += _bmoment( df0_Teff * (              omega_d**2) ) * invoo**2
+        mom += _bmoment( df0_Teff * (              omega_d**3) ) * invoo**3
+        mom += _bmoment( df0_Teff * (-omega_star * omega_d   ) ) * invoo**2
+        mom += _bmoment( df0_Teff * (-omega_star * omega_d**2) ) * invoo**3
+        mom += _bmoment( df0_Teff * (-omega_star * omega_d**3) ) * invoo**4
+
+        chi = (omps_Omcs**2 / kk**2) * mom
+
+        return chi
