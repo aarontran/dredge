@@ -129,11 +129,11 @@ class WaveGrid(object):
         if len(inds[0]) == 0:
             return np.array([]), np.array([]), np.array([]), np.array([])
 
-        k0_root = self.k0_vec[inds[0]]
-        omega0_re_root = self.omega0_re_vec[inds[1]]
-        omega0_im_root = self.omega0_im_vec[inds[2]]
-        arr_root = arr[ inds[0], inds[1], inds[2] ]
-        return k0_root, omega0_re_root, omega0_im_root, arr_root
+        k_root        = self.k_vec[inds[0]]
+        omega_re_root = self.omega_re_vec[inds[1]]
+        omega_im_root = self.omega_im_vec[inds[2]]
+        arr_root      = arr[ inds[0], inds[1], inds[2] ]
+        return k_root, omega_re_root, omega_im_root, arr_root
 
 
 class SlabESPerp(object):
@@ -366,19 +366,10 @@ class SlabESPerp(object):
             epsilonB = (cm^-1) used for grad(B) drift calculation in the
                 resonant denominator
 
-            Gforce = 0 or float, external force field acceleration (cm/s^2)
-                used here to add particle drift in resonant denominator.
+            Gforce = 0 or float, external force field acceleration (cm/s^2),
+                contributes particle drift to Bessel sum resonant denominators.
                 Gforce is used for both gravity and external electric fields
                 (hence capital rather than lowercase G).
-
-                Value must be normalized to species-specific v_th * abs(Omega_cs).
-                NOTE CONVENTION DIFFERS FROM OTHER CODE (e.g., epsilonN is
-                    normalized to REFERENCE species), b/c I want to put in
-                    different forces for different species...
-                NOTE abs(Omega_cs) is required because it needs to match
-                    k_vec's internal normalization
-                TODO cleanup conventions --ATr,2025june26
-
                 Sign matters; positive G points along the +y axis.
 
         Output:
@@ -427,7 +418,9 @@ class SlabESPerp(object):
             # remap omega -> omega - k*G
             # where capital G is dimensionless gravitational drift,
             # allows to include other forces (electric, ...)
-            oo = oo - kk * Gforce
+            # abs(Omcs) in Gforce norm is to match k normalization scheme
+            G = Gforce / self.species.vth_perp / abs(self.species.Omcs(self.B0))
+            oo = oo - kk * G
 
         # construct Bessel sums on grid (k,Re(ω),Im(ω))
         bshape = (self.k_vec.size, self.omega_re_vec.size, self.omega_im_vec.size)
@@ -1104,15 +1097,6 @@ class SlabESPerp(object):
             Gforce = 0 or float, external force field acceleration (cm/s^2).
                 Gforce is used for both gravity and external electric fields
                 (hence capital rather than lowercase G).
-
-                Value must be normalized to species-specific v_th * abs(Omega_cs).
-                NOTE CONVENTION DIFFERS FROM OTHER CODE (e.g., epsilonN is
-                    normalized to REFERENCE species), b/c I want to put in
-                    different forces for different species...
-                NOTE abs(Omega_cs) is required because it needs to match
-                    k_vec's internal normalization
-                TODO cleanup conventions --ATr,2025june26
-
                 Sign matters; positive G points along the +y axis.
 
         """
@@ -1122,6 +1106,8 @@ class SlabESPerp(object):
         omps_Omcs = self.species.omps(ns) / self.species.Omcs(self.B0)
         epsN = epsilonN * self.species.rLs(self.B0)
         #epsB = epsilonB * self.species.rLs(self.B0)
+        # abs(Omcs) in Gforce norm is to match k normalization scheme
+        G = Gforce / self.species.vth_perp / abs(self.species.Omcs(self.B0))
         kk = self.kk  # scaled to species rho_Ls
         oo = self.oo  # scaled to species Omega_cs
 
@@ -1133,7 +1119,7 @@ class SlabESPerp(object):
         # DCLC but with gravitational drift
         # recall that bsum0 terms are distributed out to minimize large array
         # operations.
-        terms = self.bsum0 - epsN*oo/kk * self.bsum0 - (epsN + 2*Gforce)/kk * self.bsum1
+        terms = self.bsum0 - epsN*oo/kk * self.bsum0 - (epsN + 2*G)/kk * self.bsum1
 
         return omps_Omcs**2 * terms
 
@@ -1490,7 +1476,7 @@ class BounceAvgESPerp(object):
 
         return result
 
-    def chi_GK(self, epsilonN, ns, gforce):
+    def chi_GK(self, epsilonN, ns, Gforce):
         """
         Compute gyro-averaged, GK-ordered susceptibility for exactly
         perpendicular electrostatic waves
@@ -1498,7 +1484,7 @@ class BounceAvgESPerp(object):
         Input:
             epsilonN = signed density gradient in cm^-1 at midplane z=0
             ns = single-species number density in cm^-3 at midplane z=0
-            gforce = external acceleration (cm/s^2); positive g points along +y axis
+            Gforce = external acceleration (cm/s^2); positive g points along +y axis
         """
         sp = self.species
         omps_Omcs = sp.omps(ns) / sp.Omcs(self.B0)
@@ -1558,9 +1544,9 @@ class BounceAvgESPerp(object):
         # integrate over s, then multiply by k
 
         # QUICK HACK -- NO MAGNETIC FIELD CURVATURE YET
-        # just include gforce and allow for arbitrary temperature and F(...)
+        # just include Gforce and allow for arbitrary temperature and F(...)
         v_drift = np.ones( (self.ssamp.shape[0],), dtype=np.float64)
-        v_drift *= gforce/(sp.vth_perp * sp.Omcs(self.B0))
+        v_drift *= Gforce/(sp.vth_perp * sp.Omcs(self.B0))  # TODO this sign convention differs from SlabESPerp code, reconcile? --ATr,2025nov09
         # TODO include the grad(B) and curvature(B) effects
         v_drift = v_drift[...,np.newaxis,np.newaxis]  # (s, vperp, vprll) shape
 
