@@ -1647,3 +1647,197 @@ class BounceAvgESPerp(object):
         chi = (2. * omps_Omcs**2 / kk**2) * mom
 
         return chi
+
+    def chi_GK_loop(self, epsilonN, ns, Gforce):
+        """
+        Compute gyro-averaged, GK-ordered susceptibility for exactly
+        perpendicular electrostatic waves
+
+        No approximation for resonant denominator, but compute the
+        velocity-space integral at every point in omega...
+
+        Input:
+            epsilonN = signed density gradient in cm^-1 at midplane z=0
+            ns = single-species number density in cm^-3 at midplane z=0
+            Gforce = external acceleration (cm/s^2); positive g points along +y axis
+        """
+        sp = self.species
+        omps_Omcs = sp.omps(ns) / sp.Omcs(self.B0)
+        epsN = epsilonN * sp.rLs(self.B0)
+        # abs(Omcs) in Gforce norm is to match k normalization scheme
+        G = Gforce / self.species.vth_perp / abs(self.species.Omcs(self.B0))
+        kk = self.kk  # scaled to species rho_Ls
+        oo = self.oo  # scaled to species Omega_cs
+
+        # ------------------------------------------
+        # start preparing pieces of velocity-space integral
+
+        # Convention: make array shapes like (vperp, vprll, k, Re(om), Im(om))
+        # Integrate over (vperp, vprll) in order to evaluate susceptibility,
+        # leaving only a 3D array.
+        # Be strategic about what arrays to broadcast.
+
+        # EXTEND to (vperp, vprll; k, Re(omega), Im(omega)) grid
+        # for broadcasting integral
+        kk5d = kk[np.newaxis, np.newaxis, ...]  # scaled to species rho_Ls
+        oo5d = oo[np.newaxis, np.newaxis, ...]  # scaled to species Omega_cs
+        assert kk5d.ndim == 5
+        assert oo5d.ndim == 5
+
+        # Chain rule:
+        # df/dE |_{\mu} = df/d(v_\prll) |_{v_\perp} * d(v_\prll)/dE |_{\mu}.
+        # The df/d(v_\perp) term vanished because d(v_\perp)/dE |_{\mu} = 0.
+        assert isinstance(sp, KineticVDFGrid)
+        df0_dvprll  = np.gradient(sp.df,      sp.vprll_vec, axis=1)
+        df0_dvprll2 = np.gradient(df0_dvprll, sp.vprll_vec, axis=1)
+
+        pitch90 = (sp.vprll_vec == 0)
+        if np.any(pitch90):
+            # at vprll=0, df/dvprll -> 0 by symmetry, but dE/dvprll -> 0
+            # gives an indeterminate limit; apply l'Hopital's rule to bypass
+            df0_dE = np.empty_like(sp.df)
+            df0_dE[:,pitch90] = df0_dvprll2[:,pitch90] / sp.m
+            df0_dE[:,~pitch90] = ( df0_dvprll[:,~pitch90]
+                                   / (sp.m * sp.vprll_vec[np.newaxis,~pitch90]) )
+        else:
+            df0_dE = df0_dvprll * 1/(sp.m * sp.vprll_vec)
+        # effective temperature in ergs (CGS unit)
+        # defined so that Teff > 0 is expected
+        Teff = -1 * sp.df / df0_dE
+        # normalized to T_perp; for Maxwellian we expect Teff = 1
+        # in these dimensionless units.
+        Teff /= (0.5 * sp.m * sp.vth_perp**2)
+        # broadcast over (vperp, vprll; k, Re(omega), Im(omega)) grid
+        Teff = Teff[...,np.newaxis,np.newaxis,np.newaxis]
+        assert Teff.ndim == 5
+
+        # diamagnetic drift frequency
+        # is bounce-average invariant, within our approximation
+        # WARNING: epsN is the factor in (1 + epsN*R_y) where R_y is guiding
+        # center; epsN is NOT the same as n/(dn/dy) because of boltzmann factor
+        # when G is present, see my paper and LaTeX notes
+        omega_star = -1 * kk5d * (0.5*epsN*Teff)  # function of (vperp, vprll, k)
+        omega_star = omega_star.astype(np.complex128)
+
+        # bounce-averaged gyrocenter drift frequency
+        # need to compute on grid of (s, vperp, vprll),
+        # integrate over s, then multiply by k
+
+        # QUICK HACK -- NO MAGNETIC FIELD CURVATURE YET
+        # just include Gforce and allow for arbitrary temperature and F(...)
+        # TODO include the grad(B) and curvature(B) effects
+        v_drift = G * np.ones( (self.ssamp.shape[0],), dtype=np.float64)
+        v_drift = v_drift[...,np.newaxis,np.newaxis]  # (s, vperp, vprll) shape
+
+        v_BAD = self.bounce_average(v_drift, norm=True)  # (vperp, vprll) shape
+
+        omega_d = kk5d * v_BAD[...,np.newaxis,np.newaxis,np.newaxis]  # (vperp,vprll, k,Re(omega),Im(omega))
+        omega_d = omega_d.astype(np.complex128)
+
+        # -------------------------------------------
+        # to make integral tractable,
+        # expand the 1/(omega - omega_drift) term
+        # handling both cases of omega_d/omega << 1 and >> 1 separately...
+        #
+        # to approximate 1/(1-x)...
+        # when x < 1, use 1+x+x^2+x^3
+        # when x > 1, use -1/x*(1+1/x+1/x^2+1/x^3)
+        # for the case x = -1, we should use np.inf
+        #
+        # PROBLEM is omega_d depends on velocity space and k,
+        # so we still end up with a 5D loop...
+        # for every omega, scan velocity space
+            # for every velocity space point
+            #   omega_d = whatever
+            #   if abs(omega/omega_d) < 1 use one approx forchi
+            #   if abs(omega/omega_d) > 1 use another approx for chi
+            #   if abs(omega/omega_d) == 1 use np.inf
+        #
+        # TEMPORARY RESOLUTION
+        # only consider the case of omega_d/omega << 1
+        # -------------------------------------------
+
+        # use same velocity norm on both VDF coodinate axes,
+        # but keep 1D coordinate shape for moment integration
+        vperp_vth = sp.vperp_vec / sp.vth_perp
+        vprll_vth = sp.vprll_vec / sp.vth_perp
+        df0_vth = sp.df * sp.vth_perp**3
+
+        _df0_grid_mom5 = df0_vth[..., np.newaxis,np.newaxis,np.newaxis] # (vperp, vprll; k, Re(omega), Im(omega)) grid
+        _2pi_vperp_vth_grid_mom5 = 2*np.pi*vperp_vth[ :, np.newaxis,np.newaxis,np.newaxis] # (vperp; k, Re(omega), Im(omega)) grid
+
+        _df0_grid_mom3 = df0_vth[..., np.newaxis] # (vperp, vprll; k) grid
+        _2pi_vperp_vth_grid_mom3 = 2*np.pi*vperp_vth[ :, np.newaxis] # (vperp; k) grid
+
+        def _bmoment5(x):
+            """bmoment = broadcasted and dimensionless moment integral"""
+            #assert x.ndim == 5
+            mom_reduced = np.trapz(x * _df0_grid_mom5, vprll_vth, axis=1)
+            return np.trapz(mom_reduced * _2pi_vperp_vth_grid_mom5, vperp_vth, axis=0)
+
+        def _bmoment3(x):
+            """bmoment = broadcasted and dimensionless moment integral"""
+            #assert x.ndim == 3
+            mom_reduced = np.trapz(x * _df0_grid_mom3, vprll_vth, axis=1)
+            return np.trapz(mom_reduced * _2pi_vperp_vth_grid_mom3, vperp_vth, axis=0)
+
+        # MAKE THE J_0^2(...) grid
+        # NOT BOTHERING TO ORGANIZE VARIABLES IN A CONSISTENT STYLE YET
+        # TODO CLEAN UP THIS GARBAGE... too much going on in this function,
+        # there is a risk of inadvertent namespace collisions -ATr,2025nov09
+        Jarg = kk5d * vperp_vth[:,np.newaxis,np.newaxis,np.newaxis,np.newaxis]
+        J0sq = scipy.special.jv(0, Jarg)**2
+
+        mom = np.zeros((self.k_vec.size,
+                        self.omega_re_vec.size,
+                        self.omega_im_vec.size), dtype=np.complex128)
+
+        # SAME IDEA, BUT DONT APPLY THE EXPANSION
+        # and forget about Teff, just assume Maxwellian
+        # only works for the gravity drift case, so both omega_star and omega_d
+        # are independent of velocity space, and we can break the factor
+        # (oo - omega_star) / (oo - omega_d) out of the integral
+        # result agrees well with fully-kinetic expression
+        mom += _bmoment5( 1./Teff            )  # <-- this should just return 1 for Maxwellian
+
+        assert J0sq.shape[3] == 1  # J0^2 independent of omega
+        assert J0sq.shape[4] == 1
+        assert Teff.shape[3] == 1  # Teffective independent of omega
+        assert Teff.shape[4] == 1
+        assert omega_star.shape[3] == 1  # diamagfreq independent of omega
+        assert omega_star.shape[4] == 1
+        assert omega_d.shape[3] == 1  #drift freq independent of omega
+        assert omega_d.shape[4] == 1
+
+        started = datetime.now()
+
+        # avoid intermediate array alloc
+        # when constructing arrays
+        prep = np.ones((vperp_vth.size, vprll_vth.size, self.k_vec.size),
+                       dtype=np.complex128)
+        minus_J0sq_Teff = -1 * J0sq[:,:,:,0,0] / Teff[:,:,:,0,0]
+        minus_J0sq_Teff = minus_J0sq_Teff.astype(np.complex128)
+
+        for ii in range(self.omega_re_vec.size):
+            for jj in range(self.omega_im_vec.size):
+
+                #mom[:,ii,jj] += _bmoment3(
+                #        (- J0sq[:,:,:,0,0] / Teff[:,:,:,0,0])
+                #        * (oo5d[:,:,:,ii,jj] - omega_star[:,:,:,0,0])
+                #        / (oo5d[:,:,:,ii,jj] - omega_d[:,:,:,0,0])
+                #)
+
+                # pre-initializing arrays does not make much difference
+                # from quick tests on personal laptop, maybe ~10% faster
+
+                prep = minus_J0sq_Teff * (oo5d[:,:,:,ii,jj] - omega_star[:,:,:,0,0])
+                prep /= (oo5d[:,:,:,ii,jj] - omega_d[:,:,:,0,0])
+                mom[:,ii,jj] += _bmoment3( prep )
+
+                #print('done omega_im index', jj, 'elapsed', datetime.now()-started)
+
+            print('done omega_re index', ii, 'elapsed', datetime.now()-started)
+
+        chi = (2. * omps_Omcs**2 / kk**2) * mom
+
+        return chi
