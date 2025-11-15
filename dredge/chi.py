@@ -1133,6 +1133,9 @@ class BounceAvgESPerp(object):
                  Bx_vec: np.ndarray,
                  By_vec: np.ndarray,
                  Bz_vec: np.ndarray,
+                 gradBmagx_vec : np.ndarray,
+                 gradBmagy_vec : np.ndarray,
+                 gradBmagz_vec : np.ndarray,
                  r_vec: np.ndarray,
                  z_vec: np.ndarray,
     ):
@@ -1146,12 +1149,24 @@ class BounceAvgESPerp(object):
         * magnetic field points along z (toroidal)
         * Electron diamagnetic drift towards +k, ion towards -k for epsilon > 0
 
+        WARNING CURRENT GEOMETRY REQUIRES
+            Bx = B poloidal ~ 0 for WHAM
+            Bz = B axial,
+            By = B radial,
+        When extracting B field to feed into this code,
+        make sure you extract at x=0 and y > 0,
+        because internal code is built on Cartesian gradients & doesn't handle
+        cylindrical geometry yet.
+
         Inputs:
             grid = dredge.chi.WaveGrid(...) instance
             species = dredge.species.Species(...) instance
             Bx_vec = magnetic field Cartesian x-component in Gauss (CGS units)
             By_vec = magnetic field Cartesian y-component in Gauss (CGS units)
             Bz_vec = magnetic field Cartesian z-component in Gauss (CGS units)
+            gradBmagx_vec = grad(|B|) x-component in Gauss/cm (CGS units)
+            gradBmagy_vec = grad(|B|) y-component in Gauss/cm (CGS units)
+            gradBmagz_vec = grad(|B|) z-component in Gauss/cm (CGS units)
             r_vec = r-coordinate positions (cm) for B field on flux surface
             z_vec = z-coordinate positions (cm) for B field on flux surface
                     must be monotonically ascending,
@@ -1168,11 +1183,11 @@ class BounceAvgESPerp(object):
         self.By_vec = By_vec
         self.Bz_vec = Bz_vec
         self.Bmag_vec = (Bx_vec**2 + By_vec**2 + Bz_vec**2)**0.5
+        self.gradBmagx_vec = gradBmagx_vec
+        self.gradBmagy_vec = gradBmagy_vec
+        self.gradBmagz_vec = gradBmagz_vec
         self.r_vec = r_vec
         self.z_vec = z_vec
-
-        # TODO we need grad(Bmag) vector along this flux tube as well
-        # --ATr,2025november03
 
         assert self.z_vec[0] == 0.
         assert np.all(np.diff(self.z_vec) > 0)
@@ -1186,11 +1201,26 @@ class BounceAvgESPerp(object):
         self.s_vec = np.cumsum(ds_dl * dl)  # integrate along arc
         self.s_vec = np.insert(self.s_vec, 0, 0.)  # start at s=0
 
+        # compute curvature vector along the flux tube
+        # NOTE it's better to take gradients on user provided points, rather
+        # than compute gradients upon interpolation points that vary in
+        # velocity space; faster lookup table to get gradients and avoids ugly
+        # singularities, and user's provided grid resolution determines accuracy of gradients
+        self.dbhat_ds_x_vec = np.gradient(self.Bx_vec/self.Bmag_vec, self.s_vec, edge_order=2)
+        self.dbhat_ds_y_vec = np.gradient(self.By_vec/self.Bmag_vec, self.s_vec, edge_order=2)
+        self.dbhat_ds_z_vec = np.gradient(self.Bz_vec/self.Bmag_vec, self.s_vec, edge_order=2)
+
         kws = dict(bounds_error=True)#, **kwargs)  # TODO make more flexible -ATr,2025nov03
-        self.Bx_interp = RegularGridInterpolator((self.s_vec,), self.Bx_vec, **kws)
-        self.By_interp = RegularGridInterpolator((self.s_vec,), self.By_vec, **kws)
-        self.Bz_interp = RegularGridInterpolator((self.s_vec,), self.Bz_vec, **kws)
-        self.Bmag_interp = RegularGridInterpolator((self.s_vec,), self.Bmag_vec, **kws)
+        self.Bx_interp        = RegularGridInterpolator((self.s_vec,), self.Bx_vec, **kws)
+        self.By_interp        = RegularGridInterpolator((self.s_vec,), self.By_vec, **kws)
+        self.Bz_interp        = RegularGridInterpolator((self.s_vec,), self.Bz_vec, **kws)
+        self.Bmag_interp      = RegularGridInterpolator((self.s_vec,), self.Bmag_vec, **kws)
+        self.gradBmagx_interp = RegularGridInterpolator((self.s_vec,), self.gradBmagx_vec, **kws)
+        self.gradBmagy_interp = RegularGridInterpolator((self.s_vec,), self.gradBmagy_vec, **kws)
+        self.gradBmagz_interp = RegularGridInterpolator((self.s_vec,), self.gradBmagz_vec, **kws)
+        self.dbhat_ds_x_interp = RegularGridInterpolator((self.s_vec,), self.dbhat_ds_x_vec, **kws)
+        self.dbhat_ds_y_interp = RegularGridInterpolator((self.s_vec,), self.dbhat_ds_y_vec, **kws)
+        self.dbhat_ds_z_interp = RegularGridInterpolator((self.s_vec,), self.dbhat_ds_z_vec, **kws)
 
         # B field must be monotonic for this to work
         assert np.all(np.diff(self.Bmag_vec) >= 0.) or np.all(np.diff(self.Bmag_vec) <= 0.)
@@ -1223,6 +1253,18 @@ class BounceAvgESPerp(object):
 
         return
 
+    ## TODO DO WE REALLY NEED THESE INTERPOLATION METHODS?
+    ## Maybe more efficient to integrate directly using the user-supplied points;
+    ## then if better resolution demanded, user responsible for providing
+    ## finer grained B-field... -ATr,2025oct14
+
+    # NOTE YES WE DO NEED because s sample points vary in velocity space
+    # ALSO it's better to compute gradients on user provided points,
+    # then just interpolate to get result; it avoids numerical issues
+    # when taking gradients with s=(0,0) for pathological parts of velociy
+    # space
+    # --ATr,2025nov13
+
     def query_Bmag_at(self, s_points):
         # broadcasts over input array dimensions
         points = np.asarray(s_points)[...,np.newaxis]
@@ -1233,24 +1275,29 @@ class BounceAvgESPerp(object):
         points = np.asarray(B_points)[...,np.newaxis]
         return self.s_interp(points)
 
-#    def Bxyzinterp(self, s_points):
-#        """
-#        Query B-field vector at one or multiple positions along flux surface
-#        Input:
-#            s_points : arc length in cm, np.ndarray with ndim=1
-#            **kwargs : passed to scipy's RegularGridInterpolator
-#        Returns:
-#            B : np.ndarray with shape (3, len(z))
-#        """
-#        ## TODO DO WE REALLY NEED THIS?
-#        ## Maybe better to integrate directly using the user-supplied points;
-#        ## then if better resolution demanded, user responsible for providing
-#        ## finer grained B-field... -ATr,2025oct14
-#        assert np.ndim(s_points) == 1
-#        Bx = Bxintp(s_points)
-#        By = Byintp(s_points)
-#        Bz = Bzintp(s_points)
-#        return np.array([Bx, By, Bz])
+    def query_Bxyz_at(self, s_points):
+        # broadcasts over input array dimensions
+        points = np.asarray(s_points)[...,np.newaxis]
+        Bx = self.Bx_interp(points)
+        By = self.By_interp(points)
+        Bz = self.Bz_interp(points)
+        return np.array([Bx, By, Bz])
+
+    def query_gradBmagxyz_at(self, s_points):
+        # broadcasts over input array dimensions
+        points = np.asarray(s_points)[...,np.newaxis]
+        dBx = self.gradBmagx_interp(points)
+        dBy = self.gradBmagy_interp(points)
+        dBz = self.gradBmagz_interp(points)
+        return np.array([dBx, dBy, dBz])
+
+    def query_dbhat_ds_xyz_at(self, s_points):
+        # broadcasts over input array dimensions
+        points = np.asarray(s_points)[...,np.newaxis]
+        kx = self.dbhat_ds_x_interp(points)
+        ky = self.dbhat_ds_y_interp(points)
+        kz = self.dbhat_ds_z_interp(points)
+        return np.array([kx, ky, kz])
 
     def setup_bounce_average(self, NS_RESOLUTION=500, TBOUNCE4TH_MAX = 1e99):
         """
@@ -1317,6 +1364,35 @@ class BounceAvgESPerp(object):
         self.sturn = sturn  # (vperp,vprll) grid
         self.ssamp = ssamp  # (NS_RESOLUTION,vperp,vprll) grid
         self.Bsamp = Bsamp  # (NS_RESOLUTION,vperp,vprll) grid
+
+        # construct normalized grad(B) and curvature drifts, beware that the
+        # arc-length "s" grid differs for every point in velocity space.
+        # TODO Rahul mentioned something about using E,mu coordinates because then
+        # one velocity-space coordinate factors out of vdrift expressions, when
+        # you normalize to Bturn or sturn or something... can probably simplify
+        # this code --ATr,2025nov11+13
+        Bmag     = self.query_Bmag_at        (self.ssamp)  # shape (  NS_RESOLUTION,vperp,vprll)
+        Bvec     = self.query_Bxyz_at        (self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
+        gradB    = self.query_gradBmagxyz_at (self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
+        dbhat_ds = self.query_dbhat_ds_xyz_at(self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
+        bhat = Bvec / Bmag[np.newaxis,...]                 # shape (3,NS_RESOLUTION,vperp,vprll)
+
+        # LOCAL cyclotron frequency in these expressions
+        # NOTE ABSOLUTE VALUE IS USED HERE, to work with k normalization...
+        Omcs = abs(sp.Omcs(Bmag))  # shape (NS_RESOLUTION,vperp,vprll)
+
+        # philosophy, only compute stuff that uses vgrid and Bgeometry info,
+        # and keep everything in CGS units for now; let user/caller handle the
+        # k gridding and non-dimensionalization
+        self.Bmag = Bmag  # need this to rescale k_perp vector along flux surface
+        self.v_gradB = (# shape (3,NS_RESOLUTION,vperp,vprll)
+                (0.5 * vperp[np.newaxis,np.newaxis,...]**2 / Omcs[np.newaxis,...])
+                * np.cross(bhat, gradB, axisa=0, axisb=0, axisc=0) / Bmag[np.newaxis,...]
+        )
+        self.v_curv = (# shape (3,NS_RESOLUTION,vperp,vprll)
+                (vprll[np.newaxis,np.newaxis,...]**2 / Omcs[np.newaxis,...])
+                * np.cross(bhat, dbhat_ds, axisa=0, axisb=0, axisc=0)
+        )
 
         # used to normalize bounce integral.
         # to be honest, the user should probably call this with
@@ -1543,19 +1619,32 @@ class BounceAvgESPerp(object):
         # when G is present, see my paper and LaTeX notes
         omega_star = -1 * kk5d * (0.5*epsN*Teff)  # function of (vperp, vprll, k)
 
-        # bounce-averaged gyrocenter drift frequency
-        # need to compute on grid of (s, vperp, vprll),
-        # integrate over s, then multiply by k
+        # gyrocenter drift velocities on grid of (s, vperp, vprll)
+        v_drift = np.zeros( self.ssamp.shape, dtype=np.float64)
 
-        # QUICK HACK -- NO MAGNETIC FIELD CURVATURE YET
-        # just include Gforce and allow for arbitrary temperature and F(...)
-        # TODO include the grad(B) and curvature(B) effects
-        v_drift = G * np.ones( (self.ssamp.shape[0],), dtype=np.float64)
-        v_drift = v_drift[...,np.newaxis,np.newaxis]  # (s, vperp, vprll) shape
+        # multiply all the drifts by sqrt(B/B0) to account for kperp changing
+        # along fluxtube, assuming simple flux freezing
+        # TODO DOUBLE CHECK CAREFULLY, NEED FEEDBACK ON THIS --ATr,2025nov13
 
+        # external gravitational force drift
+        v_drift += (G * np.sqrt(self.Bmag/self.B0))
+
+        # grad(B) drift
+        # Pre-cached drift velocity array shape = (3,NS_RESOLUTION,vperp,vprll)
+        # in my axisymmetric slab approx, only use x (poloidal) component
+        v_drift += (self.v_gradB[0,...]/sp.vth_perp) * np.sqrt(self.Bmag/self.B0)
+
+        # curvature drift
+        # Pre-cached drift velocity array shape = (3,NS_RESOLUTION,vperp,vprll)
+        # in my axisymmetric slab approx, only use x (poloidal) component
+        v_drift += (self.v_curv [0,...]/sp.vth_perp) * np.sqrt(self.Bmag/self.B0)
+
+        # compute the bounce average for every point in velocity space
         v_BAD = self.bounce_average(v_drift, norm=True)  # (vperp, vprll) shape
 
-        omega_d = kk5d * v_BAD[...,np.newaxis,np.newaxis,np.newaxis]  # (vperp,vprll, k,Re(omega),Im(omega))
+        # multiply by midplane k_perp(s=0) to get the final bounce-averaged
+        # drift frequency on grid (vperp,vprll,k,Re(omega),Im(omega))
+        omega_d = kk5d * v_BAD[...,np.newaxis,np.newaxis,np.newaxis]
 
         # -------------------------------------------
         # to make integral tractable,
