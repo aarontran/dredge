@@ -15,6 +15,7 @@ from scipy.interpolate import RegularGridInterpolator
 
 from .special import Zfunc
 from .species import Species, KineticVDFGrid
+from .field import FieldLineVec
 from .const import CLIGHT
 
 # beware... changing temperature, mass, charge,
@@ -1130,14 +1131,7 @@ class BounceAvgESPerp(object):
     def __init__(self,
                  grid: WaveGrid,
                  species: KineticVDFGrid,
-                 Bx_vec: np.ndarray,
-                 By_vec: np.ndarray,
-                 Bz_vec: np.ndarray,
-                 gradBmagx_vec : np.ndarray,
-                 gradBmagy_vec : np.ndarray,
-                 gradBmagz_vec : np.ndarray,
-                 r_vec: np.ndarray,
-                 z_vec: np.ndarray,
+                 field: FieldLineVec,
     ):
         """
         Susceptibility for perpendicular electrostatic waves in a paraxial
@@ -1160,89 +1154,24 @@ class BounceAvgESPerp(object):
 
         Inputs:
             grid = dredge.chi.WaveGrid(...) instance
-            species = dredge.species.Species(...) instance
-            Bx_vec = magnetic field Cartesian x-component in Gauss (CGS units)
-            By_vec = magnetic field Cartesian y-component in Gauss (CGS units)
-            Bz_vec = magnetic field Cartesian z-component in Gauss (CGS units)
-            gradBmagx_vec = grad(|B|) x-component in Gauss/cm (CGS units)
-            gradBmagy_vec = grad(|B|) y-component in Gauss/cm (CGS units)
-            gradBmagz_vec = grad(|B|) z-component in Gauss/cm (CGS units)
-            r_vec = r-coordinate positions (cm) for B field on flux surface
-            z_vec = z-coordinate positions (cm) for B field on flux surface
-                    must be monotonically ascending,
-                    must have z=0. as the first point in array.
+            species = dredge.species.KineticVDFGrid(...) instance
+            field = dredge.field.FieldLineVec(...) instance
         """
         self.grid = grid
         self.species = species
+        self.field = field
+        assert isinstance(species, KineticVDFGrid)
+        assert isinstance(field, FieldLineVec)
 
-        # -----------------------
-        # for bounce-averaging
+        # midplane magnetic field for \Omega_{cs} and other normalizations
+        self.B0 = field.query_Bmag_at([0.])
 
-        # KEEP UNITS ATTACHED!!!!!! TODO fix dimensionlessness
-        self.Bx_vec = Bx_vec
-        self.By_vec = By_vec
-        self.Bz_vec = Bz_vec
-        self.Bmag_vec = (Bx_vec**2 + By_vec**2 + Bz_vec**2)**0.5
-        self.gradBmagx_vec = gradBmagx_vec
-        self.gradBmagy_vec = gradBmagy_vec
-        self.gradBmagz_vec = gradBmagz_vec
-        self.r_vec = r_vec
-        self.z_vec = z_vec
-
-        assert self.z_vec[0] == 0.
-        assert np.all(np.diff(self.z_vec) > 0)
-
-        # compute arc length along the curve,
-        # needed for bounce-average integral
-        dl = (np.diff(r_vec)**2 + np.diff(z_vec)**2)**0.5
-        dr_dl = np.diff(r_vec) / dl
-        dz_dl = np.diff(z_vec) / dl
-        ds_dl = (dr_dl**2 + dz_dl**2)**0.5
-        self.s_vec = np.cumsum(ds_dl * dl)  # integrate along arc
-        self.s_vec = np.insert(self.s_vec, 0, 0.)  # start at s=0
-
-        # compute curvature vector along the flux tube
-        # NOTE it's better to take gradients on user provided points, rather
-        # than compute gradients upon interpolation points that vary in
-        # velocity space; faster lookup table to get gradients and avoids ugly
-        # singularities, and user's provided grid resolution determines accuracy of gradients
-        self.dbhat_ds_x_vec = np.gradient(self.Bx_vec/self.Bmag_vec, self.s_vec, edge_order=2)
-        self.dbhat_ds_y_vec = np.gradient(self.By_vec/self.Bmag_vec, self.s_vec, edge_order=2)
-        self.dbhat_ds_z_vec = np.gradient(self.Bz_vec/self.Bmag_vec, self.s_vec, edge_order=2)
-
-        kws = dict(bounds_error=True)#, **kwargs)  # TODO make more flexible -ATr,2025nov03
-        self.Bx_interp        = RegularGridInterpolator((self.s_vec,), self.Bx_vec, **kws)
-        self.By_interp        = RegularGridInterpolator((self.s_vec,), self.By_vec, **kws)
-        self.Bz_interp        = RegularGridInterpolator((self.s_vec,), self.Bz_vec, **kws)
-        self.Bmag_interp      = RegularGridInterpolator((self.s_vec,), self.Bmag_vec, **kws)
-        self.gradBmagx_interp = RegularGridInterpolator((self.s_vec,), self.gradBmagx_vec, **kws)
-        self.gradBmagy_interp = RegularGridInterpolator((self.s_vec,), self.gradBmagy_vec, **kws)
-        self.gradBmagz_interp = RegularGridInterpolator((self.s_vec,), self.gradBmagz_vec, **kws)
-        self.dbhat_ds_x_interp = RegularGridInterpolator((self.s_vec,), self.dbhat_ds_x_vec, **kws)
-        self.dbhat_ds_y_interp = RegularGridInterpolator((self.s_vec,), self.dbhat_ds_y_vec, **kws)
-        self.dbhat_ds_z_interp = RegularGridInterpolator((self.s_vec,), self.dbhat_ds_z_vec, **kws)
-
-        # B field must be monotonic for this to work
-        assert np.all(np.diff(self.Bmag_vec) >= 0.) or np.all(np.diff(self.Bmag_vec) <= 0.)
-        self.s_interp = RegularGridInterpolator((self.Bmag_vec,), self.s_vec, **kws)
-
-        # get midplane magnetic field
-        #Bx0, By0, Bz0 = self.Bxyzinterp([0.])[:,0]  # unpack numpy array
-        #self.B0 = (Bx0**2 + By0**2 + Bz0**2)**0.5
-        self.B0 = self.Bmag_interp([0.])
-
-        # ------------------------------------------
         # internal code works in dimensionless units
         # charge sign is not used for k rescaling,
         # but charge sign is included in Omega_{cs}
         self.k_vec        = grid.k_vec        * self.species.rLs (B = self.B0)
         self.omega_re_vec = grid.omega_re_vec / self.species.Omcs(B = self.B0)
         self.omega_im_vec = grid.omega_im_vec / self.species.Omcs(B = self.B0)
-
-        # calculation breaks at resonant denominators
-        # when omega exactly equal to cyclotron harmonics
-        # so ensure we only sample non-integer values
-        assert np.all(self.omega_re_vec.astype(np.int64) != self.omega_re_vec)
 
         # grids for broadcasting, faster than np.meshgrid(...)
         kk  = self.k_vec       [:, np.newaxis, np.newaxis]
@@ -1252,52 +1181,6 @@ class BounceAvgESPerp(object):
         self.oo = omr + 1j*omi
 
         return
-
-    ## TODO DO WE REALLY NEED THESE INTERPOLATION METHODS?
-    ## Maybe more efficient to integrate directly using the user-supplied points;
-    ## then if better resolution demanded, user responsible for providing
-    ## finer grained B-field... -ATr,2025oct14
-
-    # NOTE YES WE DO NEED because s sample points vary in velocity space
-    # ALSO it's better to compute gradients on user provided points,
-    # then just interpolate to get result; it avoids numerical issues
-    # when taking gradients with s=(0,0) for pathological parts of velociy
-    # space
-    # --ATr,2025nov13
-
-    def query_Bmag_at(self, s_points):
-        # broadcasts over input array dimensions
-        points = np.asarray(s_points)[...,np.newaxis]
-        return self.Bmag_interp(points)
-
-    def query_s_at(self, B_points):
-        # broadcasts over input array dimensions
-        points = np.asarray(B_points)[...,np.newaxis]
-        return self.s_interp(points)
-
-    def query_Bxyz_at(self, s_points):
-        # broadcasts over input array dimensions
-        points = np.asarray(s_points)[...,np.newaxis]
-        Bx = self.Bx_interp(points)
-        By = self.By_interp(points)
-        Bz = self.Bz_interp(points)
-        return np.array([Bx, By, Bz])
-
-    def query_gradBmagxyz_at(self, s_points):
-        # broadcasts over input array dimensions
-        points = np.asarray(s_points)[...,np.newaxis]
-        dBx = self.gradBmagx_interp(points)
-        dBy = self.gradBmagy_interp(points)
-        dBz = self.gradBmagz_interp(points)
-        return np.array([dBx, dBy, dBz])
-
-    def query_dbhat_ds_xyz_at(self, s_points):
-        # broadcasts over input array dimensions
-        points = np.asarray(s_points)[...,np.newaxis]
-        kx = self.dbhat_ds_x_interp(points)
-        ky = self.dbhat_ds_y_interp(points)
-        kz = self.dbhat_ds_z_interp(points)
-        return np.array([kx, ky, kz])
 
     def setup_bounce_average(self, NS_RESOLUTION=500, TBOUNCE4TH_MAX = 1e99):
         """
@@ -1310,7 +1193,7 @@ class BounceAvgESPerp(object):
                     (usually neighboring points) or tbounce4th_max, whichever
                     is less.
         """
-        sp = self.species
+        sp, fld = (self.species, self.field)
         vperp, vprll = np.meshgrid(sp.vperp_vec, sp.vprll_vec, indexing='ij')
         # compute (E,mu) on grid to do the bounce average
         # and construct useful variables
@@ -1321,7 +1204,7 @@ class BounceAvgESPerp(object):
         self.TBOUNCE4TH_MAX = TBOUNCE4TH_MAX
 
         # segment the velocity phase space regions
-        trapped = mu*np.amax(self.Bmag_vec) > E
+        trapped = mu*np.amax(fld.Bmag) > E
         passing = np.logical_not(trapped)
         # need to deal with special case of mu=0, call it passing
         # even for mu=0 and E=0  # TODO can handle more elegantly?  -ATr,2025nov06
@@ -1332,16 +1215,16 @@ class BounceAvgESPerp(object):
         # turning point for all trapped particles
         Bturn = np.empty_like(E)
         Bturn[mu != 0.] = E[mu!=0.] / mu[mu!=0.]
-        Bturn[mu == 0.] = np.amax(self.Bmag_vec)  # avoid divide-by-zero; mu=0 is always pasing except for singularity at origin
-        Bturn[passing] = np.amax(self.Bmag_vec)
+        Bturn[mu == 0.] = np.amax(fld.Bmag)  # avoid divide-by-zero; mu=0 is always pasing except for singularity at origin
+        Bturn[passing] = np.amax(fld.Bmag)
         # must enforce Bturn strictly within
         # B_vec range for interpolation;
         # when vprll = 0, E/mu can be < min(B_vec)
         # due to numerical imprecision.
-        Bturn = np.minimum(Bturn, np.amax(self.Bmag_vec))
-        Bturn = np.maximum(Bturn, np.amin(self.Bmag_vec))
+        Bturn = np.minimum(Bturn, np.amax(fld.Bmag))
+        Bturn = np.maximum(Bturn, np.amin(fld.Bmag))
         # get bounce-average integral upper limit
-        sturn = self.query_s_at(Bturn)
+        sturn = fld.query_s_at(Bturn)
 
         # construct (s, B(s)) integration values at STAGGERED positions!!!!
         # which should increase the accuracy of integration...
@@ -1350,11 +1233,11 @@ class BounceAvgESPerp(object):
         Bsamp = np.empty_like(ssamp)
         for ii in range(sp.vperp_vec.size):
             for jj in range(sp.vprll_vec.size):
-                ssamp_loc = np.linspace(self.s_vec[0], sturn[ii,jj],
+                ssamp_loc = np.linspace(fld.s[0], sturn[ii,jj],
                                          NS_RESOLUTION+1)
                 ssamp_loc = ssamp_loc[:-1] + 0.5*np.diff(ssamp_loc)  # offset to get cell centers
                 ssamp[:,ii,jj] = ssamp_loc
-                Bsamp[:,ii,jj] = self.query_Bmag_at(ssamp_loc)
+                Bsamp[:,ii,jj] = fld.query_Bmag_at(ssamp_loc)
 
         self.E = E  # (vperp,vprll) grid
         self.mu = mu  # (vperp,vprll) grid
@@ -1371,11 +1254,11 @@ class BounceAvgESPerp(object):
         # one velocity-space coordinate factors out of vdrift expressions, when
         # you normalize to Bturn or sturn or something... can probably simplify
         # this code --ATr,2025nov11+13
-        Bmag     = self.query_Bmag_at        (self.ssamp)  # shape (  NS_RESOLUTION,vperp,vprll)
-        Bvec     = self.query_Bxyz_at        (self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
-        gradB    = self.query_gradBmagxyz_at (self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
-        dbhat_ds = self.query_dbhat_ds_xyz_at(self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
-        bhat = Bvec / Bmag[np.newaxis,...]                 # shape (3,NS_RESOLUTION,vperp,vprll)
+        Bmag     = fld.query_Bmag_at    (self.ssamp)  # shape (  NS_RESOLUTION,vperp,vprll)
+        Bvec     = fld.query_B_at       (self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
+        gradB    = fld.query_gradBmag_at(self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
+        dbhat_ds = fld.query_dbhat_ds_at(self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
+        bhat = Bvec / Bmag[np.newaxis,...]           # shape (3,NS_RESOLUTION,vperp,vprll)
 
         # LOCAL cyclotron frequency in these expressions
         # NOTE ABSOLUTE VALUE IS USED HERE, to work with k normalization...
@@ -1413,7 +1296,7 @@ class BounceAvgESPerp(object):
         Return:
             shape (vperp, vprll)
         """
-        sp = self.species
+        sp, fld = (self.species, self.field)
         assert x.shape[0] == self.ssamp.shape[0]
         assert len(x.shape) == 3
 
@@ -1450,8 +1333,8 @@ class BounceAvgESPerp(object):
             # valid for the case x=1, but TODO MAY NOT BE CORRECT FOR x(s)
             # spatially varying........ --ATr,2025nov06
             # MIGHT NEED HIGHER ORDER EDGE STENCILS FOR THIS.
-            dB_ds2 = np.gradient(np.gradient(self.Bmag_vec, self.s_vec, edge_order=2),
-                                 self.s_vec, edge_order=2)
+            dB_ds2 = np.gradient(np.gradient(fld.Bmag, fld.s, edge_order=2),
+                                 fld.s, edge_order=2)
             if x.shape[2] == self.ssamp.shape[2]:  # computed x on full v_parallel grid
                 result[:, pitch90] = (
                     (x[0])[:,pitch90]  # cannot use [0,:,pitch90] b/c mixing selector functions
@@ -1515,7 +1398,7 @@ class BounceAvgESPerp(object):
                     # vperp=0 is assumed to be the smallest point on mesh
                     assert ii == 0
                     # can we safely index into neighboring points on vprll mesh?
-                    assert jj > 0 and jj < len(self.sp.vprll_vec)-1
+                    assert jj > 0 and jj < len(sp.vprll_vec)-1
                     # TODO stupid stupid hack --ATr,2025nov06
 
                     # when passing in x != 0, it could have arbitrary
@@ -1562,11 +1445,11 @@ class BounceAvgESPerp(object):
             ns = single-species number density in cm^-3 at midplane z=0
             Gforce = external acceleration (cm/s^2); positive g points along +y axis
         """
-        sp = self.species
+        sp, fld = (self.species, self.field)
         omps_Omcs = sp.omps(ns) / sp.Omcs(self.B0)
         epsN = epsilonN * sp.rLs(self.B0)
         # abs(Omcs) in Gforce norm is to match k normalization scheme
-        G = Gforce / self.species.vth_perp / abs(self.species.Omcs(self.B0))
+        G = Gforce / sp.vth_perp / abs(sp.Omcs(self.B0))
         kk = self.kk  # scaled to species rho_Ls
         oo = self.oo  # scaled to species Omega_cs
 
@@ -1588,7 +1471,6 @@ class BounceAvgESPerp(object):
         # Chain rule:
         # df/dE |_{\mu} = df/d(v_\prll) |_{v_\perp} * d(v_\prll)/dE |_{\mu}.
         # The df/d(v_\perp) term vanished because d(v_\perp)/dE |_{\mu} = 0.
-        assert isinstance(sp, KineticVDFGrid)
         df0_dvprll  = np.gradient(sp.df,      sp.vprll_vec, axis=1)
         df0_dvprll2 = np.gradient(df0_dvprll, sp.vprll_vec, axis=1)
 
@@ -1754,7 +1636,7 @@ class BounceAvgESPerp(object):
         omps_Omcs = sp.omps(ns) / sp.Omcs(self.B0)
         epsN = epsilonN * sp.rLs(self.B0)
         # abs(Omcs) in Gforce norm is to match k normalization scheme
-        G = Gforce / self.species.vth_perp / abs(self.species.Omcs(self.B0))
+        G = Gforce / sp.vth_perp / abs(sp.Omcs(self.B0))
         kk = self.kk  # scaled to species rho_Ls
         oo = self.oo  # scaled to species Omega_cs
 
