@@ -1475,37 +1475,43 @@ class BounceAvgESPerp(object):
         assert kk5d.ndim == 5
         assert oo5d.ndim == 5
 
-        # Chain rule:
-        # df/dE |_{\mu} = df/d(v_\prll) |_{v_\perp} * d(v_\prll)/dE |_{\mu}.
-        # The df/d(v_\perp) term vanished because d(v_\perp)/dE |_{\mu} = 0.
-        df0_dvprll  = np.gradient(sp.df,      sp.vprll_vec, axis=1)
-        df0_dvprll2 = np.gradient(df0_dvprll, sp.vprll_vec, axis=1)
+        def _compute_Teff():
+            # internal method helps isolate namespaces
 
-        pitch90 = (sp.vprll_vec == 0)
-        if np.any(pitch90):
-            # at vprll=0, df/dvprll -> 0 by symmetry, but dE/dvprll -> 0
-            # gives an indeterminate limit; apply l'Hopital's rule to bypass
-            df0_dE = np.empty_like(sp.df)
-            df0_dE[:,pitch90] = df0_dvprll2[:,pitch90] / sp.m
-            df0_dE[:,~pitch90] = ( df0_dvprll[:,~pitch90]
-                                   / (sp.m * sp.vprll_vec[np.newaxis,~pitch90]) )
-        else:
-            df0_dE = df0_dvprll * 1/(sp.m * sp.vprll_vec)
-        # enforce de facto floor on df0_dE, to not divide by zero when
-        # calculating Teff
-        if Teff_ceiling is not None:
-            sel = df0_dE == 0.
-            df0_dE[sel] = -1 * sp.df[sel] / Teff_ceiling
-            del sel
-        # effective temperature in ergs (CGS unit)
-        # defined so that Teff > 0 is expected
-        Teff = -1 * sp.df / df0_dE
-        # normalized to T_perp; for Maxwellian we expect Teff = 1
-        # in these dimensionless units.
-        Teff /= (0.5 * sp.m * sp.vth_perp**2)
-        # broadcast over (vperp, vprll; k, Re(omega), Im(omega)) grid
-        Teff = Teff[...,np.newaxis,np.newaxis,np.newaxis]
-        assert Teff.ndim == 5
+            # Chain rule:
+            # df/dE |_{\mu} = df/d(v_\prll) |_{v_\perp} * d(v_\prll)/dE |_{\mu}.
+            # The df/d(v_\perp) term vanished because d(v_\perp)/dE |_{\mu} = 0.
+            df0_dvprll  = np.gradient(sp.df,      sp.vprll_vec, axis=1)
+            df0_dvprll2 = np.gradient(df0_dvprll, sp.vprll_vec, axis=1)
+
+            pitch90 = (sp.vprll_vec == 0)
+            if np.any(pitch90):
+                # at vprll=0, df/dvprll -> 0 by symmetry, but dE/dvprll -> 0
+                # gives an indeterminate limit; apply l'Hopital's rule to bypass
+                df0_dE = np.empty_like(sp.df)
+                df0_dE[:,pitch90] = df0_dvprll2[:,pitch90] / sp.m
+                df0_dE[:,~pitch90] = ( df0_dvprll[:,~pitch90]
+                                       / (sp.m * sp.vprll_vec[np.newaxis,~pitch90]) )
+            else:
+                df0_dE = df0_dvprll * 1/(sp.m * sp.vprll_vec)
+            # enforce de facto floor on df0_dE, to not divide by zero when
+            # calculating Teff
+            if Teff_ceiling is not None:
+                sel = df0_dE == 0.
+                df0_dE[sel] = -1 * sp.df[sel] / Teff_ceiling
+                del sel
+            # effective temperature in ergs (CGS unit)
+            # defined so that Teff > 0 is expected
+            Teff = -1 * sp.df / df0_dE
+            # normalized to T_perp; for Maxwellian we expect Teff = 1
+            # in these dimensionless units.
+            Teff /= (0.5 * sp.m * sp.vth_perp**2)
+            # broadcast over (vperp, vprll; k, Re(omega), Im(omega)) grid
+            Teff = Teff[...,np.newaxis,np.newaxis,np.newaxis]
+            assert Teff.ndim == 5
+            return Teff
+
+        Teff = _compute_Teff()
 
         # diamagnetic drift frequency
         # is bounce-average invariant, within our approximation
