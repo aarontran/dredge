@@ -1435,7 +1435,7 @@ class BounceAvgESPerp(object):
 
         return result
 
-    def chi_GK(self, epsilonN, ns, Gforce):
+    def chi_GK(self, epsilonN, ns, Gforce, Teff_ceiling=None):
         """
         Compute gyro-averaged, GK-ordered susceptibility for exactly
         perpendicular electrostatic waves
@@ -1444,6 +1444,9 @@ class BounceAvgESPerp(object):
             epsilonN = signed density gradient in cm^-1 at midplane z=0
             ns = single-species number density in cm^-3 at midplane z=0
             Gforce = external acceleration (cm/s^2); positive g points along +y axis
+            Teff_ceiling = maximum effective temperature in erg,
+                to avoid division by zero in regions where distribution is
+                near or equal to zero
         """
         sp, fld = (self.species, self.field)
         omps_Omcs = sp.omps(ns) / sp.Omcs(self.B0)
@@ -1484,6 +1487,12 @@ class BounceAvgESPerp(object):
                                    / (sp.m * sp.vprll_vec[np.newaxis,~pitch90]) )
         else:
             df0_dE = df0_dvprll * 1/(sp.m * sp.vprll_vec)
+        # enforce de facto floor on df0_dE, to not divide by zero when
+        # calculating Teff
+        if Teff_ceiling is not None:
+            sel = df0_dE == 0.
+            df0_dE[sel] = -1 * sp.df[sel] / Teff_ceiling
+            del sel
         # effective temperature in ergs (CGS unit)
         # defined so that Teff > 0 is expected
         Teff = -1 * sp.df / df0_dE
