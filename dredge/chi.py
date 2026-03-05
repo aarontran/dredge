@@ -1478,31 +1478,56 @@ class BounceAvgESPerp(object):
         def _compute_Teff():
             # internal method helps isolate namespaces
 
-            # Chain rule:
-            # df/dE |_{\mu} = df/d(v_\prll) |_{v_\perp} * d(v_\prll)/dE |_{\mu}.
-            # The df/d(v_\perp) term vanished because d(v_\perp)/dE |_{\mu} = 0.
-            df0_dvprll  = np.gradient(sp.df,      sp.vprll_vec, axis=1)
-            df0_dvprll2 = np.gradient(df0_dvprll, sp.vprll_vec, axis=1)
+            # In GK equation for arbitrary non-Maxwellian F(vperp,vprll), the
+            # effective temperature is defined:
+            #       1/Teff = -1 * (dF0/dE + 1/B * dF0/dµ) / F0
+            # Use chain rule to evaluate:
+            #       dF0/dE                  =   dF0/dvprll * 1/(m * vprll)
+            #       1/B * dF0/dµ            = - dF0/dvprll * 1/(m * vprll)
+            #                                 + dF0/dvperp * 1/(m * vperp)
+            #       (dF0_dE + 1/B * dF0/dµ) =   dF0/dvperp * 1/(m * vperp)
 
-            pitch90 = (sp.vprll_vec == 0)
-            if np.any(pitch90):
-                # at vprll=0, df/dvprll -> 0 by symmetry, but dE/dvprll -> 0
-                # gives an indeterminate limit; apply l'Hopital's rule to bypass
-                df0_dE = np.empty_like(sp.df)
-                df0_dE[:,pitch90] = df0_dvprll2[:,pitch90] / sp.m
-                df0_dE[:,~pitch90] = ( df0_dvprll[:,~pitch90]
-                                       / (sp.m * sp.vprll_vec[np.newaxis,~pitch90]) )
+            # NOTE edge_order=2 is required to get correct Tperp at vperp=0
+            # line, if coordinate array includes vperp=0 exactly.
+            # When using edge_order=1 for isotropic Maxwellian,
+            # resulting Tperp is 2x larger than true value.
+            # --ATr,2026mar04
+            df0_dvperp  = np.gradient(sp.df,      sp.vperp_vec, axis=0, edge_order=2)
+            df0_dvperp2 = np.gradient(df0_dvperp, sp.vperp_vec, axis=0, edge_order=2)
+
+            # need special handling on µ=0 (vperp=0) line
+            # because vperp=0, df/dvperp -> 0 and 1/(m*vperp) -> inf gives
+            # indeterminate limit 0/0; apply l'Hopital's rule to bypass
+            zeromu = (sp.vperp_vec == 0)
+            if np.any(zeromu):
+                inv_Teff = np.empty_like(sp.df)
+                inv_Teff[ zeromu,:] =   df0_dvperp2[zeromu,:] / sp.m
+                inv_Teff[~zeromu,:] = ( df0_dvperp[~zeromu,:]
+                                        / (sp.m * sp.vperp_vec[~zeromu,np.newaxis]) )
+                inv_Teff /= (-1. * sp.df)
             else:
-                df0_dE = df0_dvprll * 1/(sp.m * sp.vprll_vec)
-            # enforce de facto floor on df0_dE, to not divide by zero when
-            # calculating Teff
+                inv_Teff = df0_dvperp / (sp.m * sp.vperp_vec[:,np.newaxis])
+                inv_Teff /= (-1. * sp.df)
+
+            # regions of low phase space density may have df0/dvperp = 0
+            # and Teff->infty; enforce ceiling to avoid dividing by zero
             if Teff_ceiling is not None:
-                sel = df0_dE == 0.
-                df0_dE[sel] = -1 * sp.df[sel] / Teff_ceiling
-                del sel
+                # when df0/dvperp = 0 exactly, deliberately choose a "positive"
+                # temperature for ceiling b/c f=0 should not be driving
+                # instability...
+                sel = np.logical_and(inv_Teff >= 0.,
+                                     inv_Teff < 1./Teff_ceiling)
+                inv_Teff[sel] = 1./Teff_ceiling
+                # handle negative/positive gradients separately
+                # to preserve sign
+                sel = np.logical_and(inv_Teff < 0.,
+                                     inv_Teff > -1./Teff_ceiling)
+                inv_Teff[sel] = -1./Teff_ceiling
+
             # effective temperature in ergs (CGS unit)
-            # defined so that Teff > 0 is expected
-            Teff = -1 * sp.df / df0_dE
+            # defined so that Teff > 0 for Maxwellian
+            Teff = 1./inv_Teff
+
             # normalized to T_perp; for Maxwellian we expect Teff = 1
             # in these dimensionless units.
             Teff /= (0.5 * sp.m * sp.vth_perp**2)
