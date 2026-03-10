@@ -1496,23 +1496,19 @@ class BounceAvgESPerp(object):
             #       dF0/dE                  =   dF0/dvprll * 1/(m * vprll)
             #       1/B * dF0/dµ            = - dF0/dvprll * 1/(m * vprll)
             #                                 + dF0/dvperp * 1/(m * vperp)
-            #       (dF0_dE + 1/B * dF0/dµ) =   dF0/dvperp * 1/(m * vperp)
+            #       (dF0/dE + 1/B * dF0/dµ) =   dF0/dvperp * 1/(m * vperp)
 
             inv_Teff = -1 * sp.compute_dF0_dEperp() / sp.df
 
-            # regions of low phase space density may have df0/dvperp = 0
+            # regions of low phase space density may have dF0/d(vperp) = 0
             # and Teff->infty; enforce ceiling to avoid dividing by zero
             if Teff_ceiling is not None:
-                # when df0/dvperp = 0 exactly, deliberately choose a "positive"
-                # temperature for ceiling b/c f=0 should not be driving
-                # instability...
-                sel = np.logical_and(inv_Teff >= 0.,
-                                     inv_Teff < 1./Teff_ceiling)
-                inv_Teff[sel] = 1./Teff_ceiling
-                # handle negative/positive gradients separately
-                # to preserve sign
-                sel = np.logical_and(inv_Teff < 0.,
-                                     inv_Teff > -1./Teff_ceiling)
+                # when dF0/d(vperp) = 0 exactly, choose Teff > 0 to be marginally
+                # stable rather than unstable (Teff < 0)
+                sel = np.logical_and(inv_Teff >= 0., inv_Teff <  1./Teff_ceiling)
+                inv_Teff[sel] =  1./Teff_ceiling
+                # treat +/- Teff separately to preserve sign of dF0/d(vperp)
+                sel = np.logical_and(inv_Teff <  0., inv_Teff > -1./Teff_ceiling)
                 inv_Teff[sel] = -1./Teff_ceiling
 
             # effective temperature in ergs (CGS unit)
@@ -1538,11 +1534,10 @@ class BounceAvgESPerp(object):
         omega_star = omega_star.astype(np.complex128)  # maybe needed for loop=True ? -ATr,2026mar04
 
         # gyrocenter drift velocities on grid of (s, vperp, vprll)
-        v_drift = np.zeros( self.ssamp.shape, dtype=np.float64)
-
-        # multiply all the drifts by sqrt(B/B0) to account for kperp changing
+        # Multiply all the drifts by sqrt(B/B0) to account for kperp changing
         # along fluxtube, assuming simple flux freezing
         # TODO DOUBLE CHECK CAREFULLY, NEED FEEDBACK ON THIS --ATr,2025nov13
+        v_drift = np.zeros( self.ssamp.shape, dtype=np.float64)
 
         # external gravitational force drift
         v_drift += (G * np.sqrt(self.Bmag/self.B0))
