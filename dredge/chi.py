@@ -1226,18 +1226,16 @@ class BounceAvgESPerp(object):
         # get bounce-average integral upper limit
         sturn = fld.query_s_at(Bturn)
 
-        # construct (s, B(s)) integration values at STAGGERED positions!!!!
-        # which should increase the accuracy of integration...
+        # Construct arc-length "s" grid for every point in velocity space,
+        # staggering positions to make numerical integral more accurate.
         ssamp = np.empty((NS_RESOLUTION, sp.vperp_vec.size, sp.vprll_vec.size),
                           dtype=np.float64)
-        Bsamp = np.empty_like(ssamp)
         for ii in range(sp.vperp_vec.size):
             for jj in range(sp.vprll_vec.size):
                 ssamp_loc = np.linspace(fld.s[0], sturn[ii,jj],
                                          NS_RESOLUTION+1)
                 ssamp_loc = ssamp_loc[:-1] + 0.5*np.diff(ssamp_loc)  # offset to get cell centers
                 ssamp[:,ii,jj] = ssamp_loc
-                Bsamp[:,ii,jj] = fld.query_Bmag_at(ssamp_loc)
 
         self.E = E  # (vperp,vprll) grid
         self.mu = mu  # (vperp,vprll) grid
@@ -1246,35 +1244,37 @@ class BounceAvgESPerp(object):
         self.Bturn = Bturn  # (vperp,vprll) grid  # useful for viz, not needed For integral
         self.sturn = sturn  # (vperp,vprll) grid
         self.ssamp = ssamp  # (NS_RESOLUTION,vperp,vprll) grid
-        self.Bsamp = Bsamp  # (NS_RESOLUTION,vperp,vprll) grid
-
-        # construct normalized grad(B) and curvature drifts, beware that the
-        # arc-length "s" grid differs for every point in velocity space.
-        # TODO Rahul mentioned something about using E,mu coordinates because then
-        # one velocity-space coordinate factors out of vdrift expressions, when
-        # you normalize to Bturn or sturn or something... can probably simplify
-        # this code --ATr,2025nov11+13
-        Bmag     = fld.query_Bmag_at    (self.ssamp)  # shape (  NS_RESOLUTION,vperp,vprll)
-        Bvec     = fld.query_B_at       (self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
-        gradB    = fld.query_gradBmag_at(self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
-        dbhat_ds = fld.query_dbhat_ds_at(self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
-        bhat = Bvec / Bmag[np.newaxis,...]           # shape (3,NS_RESOLUTION,vperp,vprll)
-
-        # LOCAL cyclotron frequency in these expressions
-        # NOTE ABSOLUTE VALUE IS USED HERE, to work with k normalization...
-        Omcs = abs(sp.Omcs(Bmag))  # shape (NS_RESOLUTION,vperp,vprll)
 
         # philosophy, only compute stuff that uses vgrid and Bgeometry info,
         # and keep everything in CGS units for now; let user/caller handle the
         # k gridding and non-dimensionalization
-        self.Bmag = Bmag  # need this to rescale k_perp vector along flux surface
-        self.v_gradB = (# shape (3,NS_RESOLUTION,vperp,vprll)
-                (0.5 * vperp[np.newaxis,np.newaxis,...]**2 / Omcs[np.newaxis,...])
-                * np.cross(bhat, gradB, axisa=0, axisb=0, axisc=0) / Bmag[np.newaxis,...]
+
+        # LOCAL magnetic field structure at varying "s"
+        self.Bmag     = fld.query_Bmag_at    (self.ssamp)  # shape (  NS_RESOLUTION,vperp,vprll)
+        self.Bvec     = fld.query_B_at       (self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
+        self.gradB    = fld.query_gradBmag_at(self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
+        self.dbhat_ds = fld.query_dbhat_ds_at(self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
+        self.bhat = self.Bvec / self.Bmag[np.newaxis,...]  # shape (3,NS_RESOLUTION,vperp,vprll)
+
+        # LOCAL cyclotron frequency at varying "s"
+        # need abs(...) to work with k normalization
+        # shape (NS_RESOLUTION,vperp,vprll)
+        self.Omcs_loc = abs(sp.Omcs(self.Bmag))
+
+        # TODO Rahul mentioned something about using E,mu coordinates because then
+        # one velocity-space coordinate factors out of vdrift expressions, when
+        # you normalize to Bturn or sturn or something... can probably simplify
+        # this code --ATr,2025nov11+13
+
+        # LOCAL guiding-center drift velocities at varying s;
+        # shape (3,NS_RESOLUTION,vperp,vprll)
+        self.v_gradB = (
+                (0.5 * vperp[np.newaxis,np.newaxis,...]**2 / self.Omcs_loc[np.newaxis,...])
+                * np.cross(self.bhat, self.gradB, axisa=0,axisb=0,axisc=0) / self.Bmag[np.newaxis,...]
         )
-        self.v_curv = (# shape (3,NS_RESOLUTION,vperp,vprll)
-                (vprll[np.newaxis,np.newaxis,...]**2 / Omcs[np.newaxis,...])
-                * np.cross(bhat, dbhat_ds, axisa=0, axisb=0, axisc=0)
+        self.v_curv = (
+                (vprll[np.newaxis,np.newaxis,...]**2 / self.Omcs_loc[np.newaxis,...])
+                * np.cross(self.bhat, self.dbhat_ds, axisa=0,axisb=0,axisc=0)
         )
 
         # used to normalize bounce integral.
@@ -1307,7 +1307,7 @@ class BounceAvgESPerp(object):
             E = self.E[np.newaxis,...]  # should be shallow copy
             mu = self.mu[np.newaxis,...]
             ssamp = self.ssamp  # (NS_RESOLUTION,vperp,vprll) grid
-            Bsamp = self.Bsamp  # (NS_RESOLUTION,vperp,vprll) grid
+            Bsamp = self.Bmag   # (NS_RESOLUTION,vperp,vprll) grid
         except:
             print("ERROR: need to call prepare_bounce_average(...)")
             raise
