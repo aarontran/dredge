@@ -1258,10 +1258,9 @@ class BounceAvgESPerp(object):
         self.dbhat_ds = fld.query_dbhat_ds_at(self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
         self.bhat = self.Bvec / self.Bmag[np.newaxis,...]  # shape (3,NS_RESOLUTION,vperp,vprll)
 
-        # LOCAL cyclotron frequency at varying "s"
-        # need abs(...) to work with k normalization
+        # LOCAL signed cyclotron frequency at varying "s"
         # shape (NS_RESOLUTION,vperp,vprll)
-        self.Omcs_loc = abs(sp.Omcs(self.Bmag))
+        self.Omcs_loc = sp.Omcs(self.Bmag)
 
         # LOCAL velocities at varying "s";
         # shape (NS_RESOLUTION,vperp,vprll)
@@ -1571,12 +1570,14 @@ class BounceAvgESPerp(object):
         # grad(B) drift
         # Pre-cached drift velocity array shape = (3,NS_RESOLUTION,vperp,vprll)
         # in my axisymmetric slab approx, only use x (poloidal) component
-        v_drift += (self.v_gradB[0,...]/sp.vth_perp) * np.sqrt(self.Bmag/self.B0)
+        # need charge sign factor to work with k normalization
+        v_drift += (self.v_gradB[0,...]/sp.vth_perp) * np.sqrt(self.Bmag/self.B0) * np.sign(sp.Omcs(self.B0))
 
         # curvature drift
         # Pre-cached drift velocity array shape = (3,NS_RESOLUTION,vperp,vprll)
         # in my axisymmetric slab approx, only use x (poloidal) component
-        v_drift += (self.v_curv [0,...]/sp.vth_perp) * np.sqrt(self.Bmag/self.B0)
+        # need charge sign factor to work with k normalization
+        v_drift += (self.v_curv [0,...]/sp.vth_perp) * np.sqrt(self.Bmag/self.B0) * np.sign(sp.Omcs(self.B0))
 
         # compute the bounce average for every point in velocity space
         v_BAD = self.bounce_average(v_drift, norm=True)  # (vperp, vprll) shape
