@@ -1155,6 +1155,7 @@ class BounceAvgESPerp(object):
         Inputs:
             grid = dredge.chi.WaveGrid(...) instance
             species = dredge.species.KineticVDFGrid(...) instance
+                      sampled at field-line-following coordinate s = 0
             field = dredge.field.FieldLineVec(...) instance
         """
         self.grid = grid
@@ -1194,6 +1195,7 @@ class BounceAvgESPerp(object):
                     is less.
         """
         sp, fld = (self.species, self.field)
+        # (vperp,vprll) are interpreted to be at s=0 (midplane)
         vperp, vprll = np.meshgrid(sp.vperp_vec, sp.vprll_vec, indexing='ij')
         # compute (E,mu) on grid to do the bounce average
         # and construct useful variables
@@ -1261,6 +1263,16 @@ class BounceAvgESPerp(object):
         # shape (NS_RESOLUTION,vperp,vprll)
         self.Omcs_loc = abs(sp.Omcs(self.Bmag))
 
+        # LOCAL velocities at varying "s";
+        # shape (NS_RESOLUTION,vperp,vprll)
+        self.vperp_loc = np.sqrt(self.Bmag/self.Bmag[0,:,:]) * vperp[np.newaxis,:,:]
+        self.vprll_loc = np.sqrt(  vprll[np.newaxis,:,:]**2
+                                 + vperp[np.newaxis,:,:]**2 * (1. - self.Bmag/self.Bmag[0,:,:]) )
+        self.vprll_loc *= np.sign( vprll[np.newaxis,:,:] )
+        # equivalent rewritings
+        # self.vperp_loc = (2 * mu[np.newaxis,:,:] * self.Bmag / sp.m)**0.5
+        # self.vprll_loc = (2/sp.m * (E[np.newaxis,:,:] - mu[np.newaxis,:,:] * self.Bmag))**0.5
+
         # TODO Rahul mentioned something about using E,mu coordinates because then
         # one velocity-space coordinate factors out of vdrift expressions, when
         # you normalize to Bturn or sturn or something... can probably simplify
@@ -1269,11 +1281,11 @@ class BounceAvgESPerp(object):
         # LOCAL guiding-center drift velocities at varying s;
         # shape (3,NS_RESOLUTION,vperp,vprll)
         self.v_gradB = (
-                (0.5 * vperp[np.newaxis,np.newaxis,...]**2 / self.Omcs_loc[np.newaxis,...])
-                * np.cross(self.bhat, self.gradB, axisa=0,axisb=0,axisc=0) / self.Bmag[np.newaxis,...]
+                0.5 * (self.vperp_loc**2 / self.Omcs_loc / self.Bmag)[np.newaxis,...]
+                * np.cross(self.bhat, self.gradB, axisa=0,axisb=0,axisc=0)
         )
         self.v_curv = (
-                (vprll[np.newaxis,np.newaxis,...]**2 / self.Omcs_loc[np.newaxis,...])
+                (self.vprll_loc**2 / self.Omcs_loc)[np.newaxis,...]
                 * np.cross(self.bhat, self.dbhat_ds, axisa=0,axisb=0,axisc=0)
         )
 
