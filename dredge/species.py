@@ -205,12 +205,32 @@ class KineticVDFGrid(Species):
 
     def moment(self, x):
         """
-        Compute a velocity-space moment
+        Compute a velocity-space moment, broadcasting over TRAILING axes
         Input:
-            x = scalar, or numpy array with shape == self.df.shape
+            x = scalar, or numpy array with valid shape (ndim >=2) of:
+                    (vperp_vec.size, 1, ...)
+                    (1, vprll_vec.size, ...)
+                    (*df.shape, ...)
+                with zero, one, two, or any number of trailing axes
+                notice that 1D arrays do not work; it's unclear whether such
+                arrays should broadcast over vperp or vprll
         """
         if np.ndim(x) == 0:
             x = x * np.ones_like(self.df)
-        assert x.ndim == self.df.ndim
-        mom_reduced = np.trapz(x * self.df, self.vprll_vec, axis=1)
-        return np.trapz(mom_reduced * 2*np.pi*self.vperp_vec, self.vperp_vec)
+        assert x.ndim >= self.df.ndim
+        if x.ndim == 2:
+            mom_reduced = np.trapz(x * self.df, self.vprll_vec, axis=1)
+            mom = np.trapz(mom_reduced * 2*np.pi*self.vperp_vec, self.vperp_vec)
+        else:
+            target_shape = [1] * x.ndim
+            target_shape[0] = self.df.shape[0]  # vperp axis
+            target_shape[1] = self.df.shape[1]  # vprll axis
+            df_wide = np.reshape(self.df, tuple(target_shape))
+
+            target_shape = [1] * (x.ndim - 1)
+            target_shape[0] = self.df.shape[0]  # vperp axis
+            vperp_wide = np.reshape(self.vperp_vec, tuple(target_shape))
+
+            mom_reduced = np.trapz(x * df_wide, self.vprll_vec, axis=1)
+            mom = np.trapz(mom_reduced * 2*np.pi*vperp_wide, self.vperp_vec, axis=0)
+        return mom

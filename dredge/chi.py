@@ -1616,34 +1616,11 @@ class BounceAvgESPerp(object):
         # TODO want to parallelize this
         if loop:
 
-            # use same velocity norm on both VDF coodinate axes,
-            # but keep 1D coordinate shape for moment integration
-            vperp_vth = sp.vperp_vec / sp.vth_perp
-            vprll_vth = sp.vprll_vec / sp.vth_perp
-            df0_vth = sp.df * sp.vth_perp**3
-
-            _df0_grid_mom5 = df0_vth[..., np.newaxis,np.newaxis,np.newaxis] # (vperp, vprll; k, Re(omega), Im(omega)) grid
-            _2pi_vperp_vth_grid_mom5 = 2*np.pi*vperp_vth[ :, np.newaxis,np.newaxis,np.newaxis] # (vperp; k, Re(omega), Im(omega)) grid
-
-            _df0_grid_mom3 = df0_vth[..., np.newaxis] # (vperp, vprll; k) grid
-            _2pi_vperp_vth_grid_mom3 = 2*np.pi*vperp_vth[ :, np.newaxis] # (vperp; k) grid
-
-            def _bmoment5(x):
-                """bmoment = broadcasted and dimensionless moment integral"""
-                #assert x.ndim == 5
-                mom_reduced = np.trapz(x * _df0_grid_mom5, vprll_vth, axis=1)
-                return np.trapz(mom_reduced * _2pi_vperp_vth_grid_mom5, vperp_vth, axis=0)
-
-            def _bmoment3(x):
-                """bmoment = broadcasted and dimensionless moment integral"""
-                #assert x.ndim == 3
-                mom_reduced = np.trapz(x * _df0_grid_mom3, vprll_vth, axis=1)
-                return np.trapz(mom_reduced * _2pi_vperp_vth_grid_mom3, vperp_vth, axis=0)
-
             # MAKE THE J_0^2(...) grid
             # NOT BOTHERING TO ORGANIZE VARIABLES IN A CONSISTENT STYLE YET
             # TODO CLEAN UP THIS GARBAGE... too much going on in this function,
             # there is a risk of inadvertent namespace collisions -ATr,2025nov09
+            vperp_vth = sp.vperp_vec / sp.vth_perp
             Jarg = kk5d * vperp_vth[:,np.newaxis,np.newaxis,np.newaxis,np.newaxis]
             J0sq = scipy.special.jv(0, Jarg)**2
 
@@ -1657,7 +1634,7 @@ class BounceAvgESPerp(object):
             # are independent of velocity space, and we can break the factor
             # (oo - omega_star) / (oo - omega_d) out of the integral
             # result agrees well with fully-kinetic expression
-            mom += _bmoment5( 1./Teff            )  # <-- this should just return 1 for Maxwellian
+            mom += sp.moment( 1./Teff            )  # <-- this should just return 1 for Maxwellian
 
             assert J0sq.shape[3] == 1  # J0^2 independent of omega
             assert J0sq.shape[4] == 1
@@ -1672,7 +1649,7 @@ class BounceAvgESPerp(object):
 
             # avoid intermediate array alloc
             # when constructing arrays
-            prep = np.ones((vperp_vth.size, vprll_vth.size, self.k_vec.size),
+            prep = np.ones((sp.vperp_vec.size, sp.vprll_vec.size, self.k_vec.size),
                            dtype=np.complex128)
             minus_J0sq_Teff = -1 * J0sq[:,:,:,0,0] / Teff[:,:,:,0,0]
             minus_J0sq_Teff = minus_J0sq_Teff.astype(np.complex128)
@@ -1680,7 +1657,7 @@ class BounceAvgESPerp(object):
             for ii in range(self.omega_re_vec.size):
                 for jj in range(self.omega_im_vec.size):
 
-                    #mom[:,ii,jj] += _bmoment3(
+                    #mom[:,ii,jj] += sp.moment(
                     #        (- J0sq[:,:,:,0,0] / Teff[:,:,:,0,0])
                     #        * (oo5d[:,:,:,ii,jj] - omega_star[:,:,:,0,0])
                     #        / (oo5d[:,:,:,ii,jj] - omega_d[:,:,:,0,0])
@@ -1691,7 +1668,7 @@ class BounceAvgESPerp(object):
 
                     prep = minus_J0sq_Teff * (oo5d[:,:,:,ii,jj] - omega_star[:,:,:,0,0])
                     prep /= (oo5d[:,:,:,ii,jj] - omega_d[:,:,:,0,0])
-                    mom[:,ii,jj] += _bmoment3( prep )
+                    mom[:,ii,jj] += sp.moment( prep )
 
                     #print('done omega_im index', jj, 'elapsed', datetime.now()-started)
 
@@ -1704,25 +1681,6 @@ class BounceAvgESPerp(object):
         # Compute chi using vectorized operations over multi-D numpy arrays
         # be very careful about numpy axis positions and broadcasting
         else:
-
-            def _bmoment(x):
-                """bmoment = broadcasted and dimensionless moment integral"""
-                # notice that DF is already hard-coded into the integral;
-                # user does not need to supply it
-                assert x.ndim == 5
-                # use same velocity norm on both VDF coodinate axes,
-                # but keep 1D coordinate shape for moment integration
-                vperp_vth = sp.vperp_vec / sp.vth_perp
-                vprll_vth = sp.vprll_vec / sp.vth_perp
-                # Broadcast df0 to (vperp, vprll; k, Re(omega), Im(omega)) grid
-                # and fix up normalization
-                df0 = sp.df[...,np.newaxis,np.newaxis,np.newaxis] * sp.vth_perp**3
-                # Broadcast vperp to (vperp; k, Re(omega), Im(omega)) grid
-                # because we already integrated out the vprll axis
-                vperp_vth = vperp_vth[ :, np.newaxis,np.newaxis,np.newaxis]
-                # compute the moment
-                mom_reduced = np.trapz(x * df0, vprll_vth, axis=1)
-                return np.trapz(mom_reduced * 2*np.pi*vperp_vth, np.squeeze(vperp_vth), axis=0)
 
             # MAKE THE J_0^2(...) grid
             # NOT BOTHERING TO ORGANIZE VARIABLES IN A CONSISTENT STYLE YET
@@ -1739,24 +1697,24 @@ class BounceAvgESPerp(object):
                             self.omega_re_vec.size,
                             self.omega_im_vec.size), dtype=np.complex128)
 
-            mom += _bmoment( 1./Teff * (1. - J0sq)                      )
-            mom += _bmoment( 1./Teff * J0sq *   omega_star              ) * invoo
-            mom += _bmoment( 1./Teff * J0sq * (-omega_d   )             ) * invoo
-            mom += _bmoment( 1./Teff * J0sq *   omega_d    * omega_star ) * invoo**2
+            mom += sp.moment( 1./Teff * (1. - J0sq)                      )
+            mom += sp.moment( 1./Teff * J0sq *   omega_star              ) * invoo
+            mom += sp.moment( 1./Teff * J0sq * (-omega_d   )             ) * invoo
+            mom += sp.moment( 1./Teff * J0sq *   omega_d    * omega_star ) * invoo**2
             # DROP the higher-order terms in (omega_d/omega)
             # TODO ADDING (omega_d/omega)^2 terms breaks calculation terribly, WHY? --ATr,2025nov09
             # it does not seem to converge like I expect, it only works correctly
             # with the lowest order terms...
-            #mom += _bmoment( 1./Teff * J0sq * (-omega_d**2)             ) * invoo**2
-            #mom += _bmoment( 1./Teff * J0sq *   omega_d**2 * omega_star ) * invoo**3
-            #mom += _bmoment( 1./Teff * J0sq * (-omega_d**3)             ) * invoo**3
-            #mom += _bmoment( 1./Teff * J0sq *   omega_d**3 * omega_star ) * invoo**4
-            #mom += _bmoment( 1./Teff * J0sq * (-omega_d**4)             ) * invoo**4
-            #mom += _bmoment( 1./Teff * J0sq *   omega_d**4 * omega_star ) * invoo**5
-            #mom += _bmoment( 1./Teff * J0sq * (-omega_d**5)             ) * invoo**5
-            #mom += _bmoment( 1./Teff * J0sq *   omega_d**5 * omega_star ) * invoo**6
-            #mom += _bmoment( 1./Teff * J0sq * (-omega_d**6)             ) * invoo**6
-            #mom += _bmoment( 1./Teff * J0sq *   omega_d**6 * omega_star ) * invoo**7
+            #mom += sp.moment( 1./Teff * J0sq * (-omega_d**2)             ) * invoo**2
+            #mom += sp.moment( 1./Teff * J0sq *   omega_d**2 * omega_star ) * invoo**3
+            #mom += sp.moment( 1./Teff * J0sq * (-omega_d**3)             ) * invoo**3
+            #mom += sp.moment( 1./Teff * J0sq *   omega_d**3 * omega_star ) * invoo**4
+            #mom += sp.moment( 1./Teff * J0sq * (-omega_d**4)             ) * invoo**4
+            #mom += sp.moment( 1./Teff * J0sq *   omega_d**4 * omega_star ) * invoo**5
+            #mom += sp.moment( 1./Teff * J0sq * (-omega_d**5)             ) * invoo**5
+            #mom += sp.moment( 1./Teff * J0sq *   omega_d**5 * omega_star ) * invoo**6
+            #mom += sp.moment( 1./Teff * J0sq * (-omega_d**6)             ) * invoo**6
+            #mom += sp.moment( 1./Teff * J0sq *   omega_d**6 * omega_star ) * invoo**7
 
             # SAME IDEA, BUT DONT APPLY THE EXPANSION
             # and forget about Teff, just assume Maxwellian
@@ -1766,8 +1724,8 @@ class BounceAvgESPerp(object):
             # result agrees well with fully-kinetic expression
             # TODO still troubleshooting why taylor expansion in omegaD/omega is so bad...
             # --ATr,2025nov10
-    #        mom += _bmoment( 1./Teff            )  # <-- this should just return 1 for Maxwellian
-    #        mom += _bmoment( 1./Teff * (- J0sq) ) * (oo + 0.5*kk*epsN) / (oo - kk*G)
+    #        mom += sp.moment( 1./Teff            )  # <-- this should just return 1 for Maxwellian
+    #        mom += sp.moment( 1./Teff * (- J0sq) ) * (oo + 0.5*kk*epsN) / (oo - kk*G)
 
             chi = (2. * omps_Omcs**2 / kk**2) * mom
 
