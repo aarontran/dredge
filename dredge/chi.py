@@ -1486,44 +1486,61 @@ class BounceAvgESPerp(object):
         assert kk5d.ndim == 5
         assert oo5d.ndim == 5
 
-        def _compute_Teff():
-            # internal method helps isolate namespaces
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-            # In GK equation for arbitrary non-Maxwellian F(vperp,vprll), the
-            # effective temperature is defined:
-            #       1/Teff = -1 * (dF0/dE + 1/B * dF0/dµ) / F0
-            # Use chain rule to evaluate:
-            #       dF0/dE                  =   dF0/dvprll * 1/(m * vprll)
-            #       1/B * dF0/dµ            = - dF0/dvprll * 1/(m * vprll)
-            #                                 + dF0/dvperp * 1/(m * vperp)
-            #       (dF0/dE + 1/B * dF0/dµ) =   dF0/dvperp * 1/(m * vperp)
+        # In GK equation for arbitrary non-Maxwellian F(vperp,vprll), the
+        # effective temperature is defined:
+        #       1/Teff = -1 * (dF0/dE + 1/B * dF0/dµ) / F0
+        # Use chain rule to evaluate:
+        #       dF0/dE                  =   dF0/dvprll * 1/(m * vprll)
+        #       1/B * dF0/dµ            = - dF0/dvprll * 1/(m * vprll)
+        #                                 + dF0/dvperp * 1/(m * vperp)
+        #       (dF0/dE + 1/B * dF0/dµ) =   dF0/dvperp * 1/(m * vperp)
 
-            inv_Teff = -1 * sp.compute_dF0_dEperp() / sp.df
+        # ratio B(s)/B(s=0) along field line; shape (NS_RESOLUTION,vperp,vprll)
+        # useful for factors of Omega_c(s)/Omega_c(s=0) and k(s)/k(s=0)
+        # note that B(s=0) should be the same for all points in velocity space,
+        # but the s sampling for each point in velocity space may differ
+        B_B0 = self.Bmag / self.Bmag[0,:,:]
 
-            # regions of low phase space density may have dF0/d(vperp) = 0
-            # and Teff->infty; enforce ceiling to avoid dividing by zero
-            if Teff_ceiling is not None:
-                # when dF0/d(vperp) = 0 exactly, choose Teff > 0 to be marginally
-                # stable rather than unstable (Teff < 0)
-                sel = np.logical_and(inv_Teff >= 0., inv_Teff <  1./Teff_ceiling)
-                inv_Teff[sel] =  1./Teff_ceiling
-                # treat +/- Teff separately to preserve sign of dF0/d(vperp)
-                sel = np.logical_and(inv_Teff <  0., inv_Teff > -1./Teff_ceiling)
-                inv_Teff[sel] = -1./Teff_ceiling
+        # Distribution function gradients, shape (s,vperp,vprll), expressed in
+        # dimensionless energy coordinates.
+        # Remember sp.df has no concept of (E,µ) coordinates, B field, etc.
+        # Coordinates and B field are introduced in susceptibility class.
+        dF0_dEprll = sp.compute_dF0_dEprll() * (0.5 * sp.m * sp.vth_perp**2)
+        dF0_dEperp = sp.compute_dF0_dEperp() * (0.5 * sp.m * sp.vth_perp**2)
+        dF0_dEprll = dF0_dEprll[np.newaxis,:,:]
+        dF0_dEperp = dF0_dEperp[np.newaxis,:,:]
+        # derived gradients (using chain rule)
+        dF0_dmu_B0 = -dF0_dEprll + dF0_dEperp
+        dF0_dmu_B  =  dF0_dmu_B0 / B_B0  # this varies along field line!
+        dF0_dE     =  dF0_dEprll  # alias, dF0/dE |_µ = dF0/d(Eprll) |_{Eperp}
 
-            # effective temperature in ergs (CGS unit)
-            # defined so that Teff > 0 for Maxwellian
-            Teff = 1./inv_Teff
+        # inverse temperature, shape (s,vperp,vprll), normalized to Tperp so
+        # that Teff = +1 for a bi-Maxwellian
+        #inv_Teff = -1 * sp.compute_dF0_dEperp() / sp.df
+        inv_Teff = -1 * (dF0_dE + dF0_dmu_B) / sp.df[np.newaxis,:,:]
 
-            # normalized to T_perp; for Maxwellian we expect Teff = 1
-            # in these dimensionless units.
-            Teff /= (0.5 * sp.m * sp.vth_perp**2)
-            # broadcast over (vperp, vprll; k, Re(omega), Im(omega)) grid
-            Teff = Teff[...,np.newaxis,np.newaxis,np.newaxis]
-            assert Teff.ndim == 5
-            return Teff
+        # regions of low phase space density may have dF0/d(vperp) = 0
+        # and Teff->infty; enforce ceiling to avoid dividing by zero
+        if Teff_ceiling is not None:
+            _Tmax = Teff_ceiling / (0.5 * sp.m * sp.vth_perp**2)  # make dimensionless
+            # when dF0/d(vperp) = 0 exactly, choose Teff > 0 to be marginally
+            # stable rather than unstable (Teff < 0)
+            sel = np.logical_and(inv_Teff >= 0., inv_Teff <  1./_Tmax)
+            inv_Teff[sel] =  1./_Tmax
+            # treat +/- Teff separately to preserve sign of dF0/d(vperp)
+            sel = np.logical_and(inv_Teff <  0., inv_Teff > -1./_Tmax)
+            inv_Teff[sel] = -1./_Tmax
+            del sel, _Tmax
 
-        Teff = _compute_Teff()
+        Teff = 1./inv_Teff
+
+        # broadcast over (vperp, vprll; k, Re(omega), Im(omega)) grid
+        Teff = Teff[0,:,:,np.newaxis,np.newaxis,np.newaxis] # TODO QUICK TEST; DISCARD s DEPENDENCE
+        assert Teff.ndim == 5
+
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
         # diamagnetic drift frequency
         # is bounce-average invariant, within our approximation
