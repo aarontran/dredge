@@ -1536,48 +1536,41 @@ class BounceAvgESPerp(object):
 
         Teff = 1./inv_Teff
 
-        # broadcast over (vperp, vprll; k, Re(omega), Im(omega)) grid
-        Teff = Teff[0,:,:,np.newaxis,np.newaxis,np.newaxis] # TODO QUICK TEST; DISCARD s DEPENDENCE
-        assert Teff.ndim == 5
-
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # compute velocities on (s,vperp,vprll) grid
 
-        # diamagnetic drift frequency
-        # is bounce-average invariant, within our approximation
-        # WARNING: epsN is the factor in (1 + epsN*R_y) where R_y is guiding
-        # center; epsN is NOT the same as n/(dn/dy) because of boltzmann factor
-        # when G is present, see my paper and LaTeX notes
-        omega_star = -1 * kk5d * (0.5*epsN*Teff)  # function of (vperp, vprll, k)
-        omega_star = omega_star.astype(np.complex128)  # maybe needed for loop=True ? -ATr,2026mar04
+        # DIAMAGNETIC DRIFT VELOCITY (dimensionless)
+        # Assume epsN ~ sqrt(B) along the field line from flux freezing
+        #
+        # WARNING (2025 Summer/Fall): epsN is the factor in (1 + epsN*R_y)
+        # where R_y is guiding center; epsN is NOT the same as n/(dn/dy)
+        # because of boltzmann factor when G is present, see my paper and LaTeX
+        # notes.  This can be traced to choice of coordinates (exact vs.
+        # inexact constants of motion) used when deriving GK equations.
+        v_star = 0.5 * (-epsN) * Teff / np.sqrt(B_B0)
 
-        # gyrocenter drift velocities on grid of (s, vperp, vprll)
-        # Multiply all the drifts by sqrt(B/B0) to account for kperp changing
-        # along fluxtube, assuming simple flux freezing
-        # TODO DOUBLE CHECK CAREFULLY, NEED FEEDBACK ON THIS --ATr,2025nov13
+        # GRAVITY DRIFT VELOCITY (dimensionless)
+        # v_grav/v_th = Gforce / v_th,perp / Omci(0) * Omci(0)/Omci(s)
+        v_grav = G / B_B0
+
+        # BACKGROUND F0 VELOCITY (dimensionless)
+        # encodes all the boltzmann response drifts...
+        v_bkg = v_star + v_grav
+
+        # GYROCENTER DRIFT VELOCITY (dimensionless)
         v_drift = np.zeros( self.ssamp.shape, dtype=np.float64)
-
         # external gravitational force drift
-        v_drift += (G * np.sqrt(self.Bmag/self.B0))
-
+        v_drift += v_grav
         # grad(B) drift
         # Pre-cached drift velocity array shape = (3,NS_RESOLUTION,vperp,vprll)
         # in my axisymmetric slab approx, only use x (poloidal) component
         # need charge sign factor to work with k normalization
-        v_drift += (self.v_gradB[0,...]/sp.vth_perp) * np.sqrt(self.Bmag/self.B0) * np.sign(sp.Omcs(self.B0))
-
+        v_drift += (self.v_gradB[0,...]/sp.vth_perp) * np.sign(sp.Omcs(self.B0))
         # curvature drift
         # Pre-cached drift velocity array shape = (3,NS_RESOLUTION,vperp,vprll)
         # in my axisymmetric slab approx, only use x (poloidal) component
         # need charge sign factor to work with k normalization
-        v_drift += (self.v_curv [0,...]/sp.vth_perp) * np.sqrt(self.Bmag/self.B0) * np.sign(sp.Omcs(self.B0))
-
-        # compute the bounce average for every point in velocity space
-        v_BAD = self.bounce_average(v_drift, norm=True)  # (vperp, vprll) shape
-
-        # multiply by midplane k_perp(s=0) to get the final bounce-averaged
-        # drift frequency on grid (vperp,vprll,k,Re(omega),Im(omega))
-        omega_d = kk5d * v_BAD[...,np.newaxis,np.newaxis,np.newaxis]
-        omega_d = omega_d.astype(np.complex128)  # maybe needed for loop=True ? -ATr,2026mar04
+        v_drift += (self.v_curv [0,...]/sp.vth_perp) * np.sign(sp.Omcs(self.B0))
 
         # -------------------------------------------
         # to make integral tractable,
@@ -1608,64 +1601,109 @@ class BounceAvgESPerp(object):
         # TODO want to parallelize this
         if loop:
 
-            # MAKE THE J_0^2(...) grid
-            # NOT BOTHERING TO ORGANIZE VARIABLES IN A CONSISTENT STYLE YET
-            # TODO CLEAN UP THIS GARBAGE... too much going on in this function,
-            # there is a risk of inadvertent namespace collisions -ATr,2025nov09
-            vperp_vth = sp.vperp_vec / sp.vth_perp
-            Jarg = kk5d * vperp_vth[:,np.newaxis,np.newaxis,np.newaxis,np.newaxis]
-            J0sq = scipy.special.jv(0, Jarg)**2
-
             mom = np.zeros((self.k_vec.size,
                             self.omega_re_vec.size,
                             self.omega_im_vec.size), dtype=np.complex128)
 
-            # SAME IDEA, BUT DONT APPLY THE EXPANSION
-            # and forget about Teff, just assume Maxwellian
-            # only works for the gravity drift case, so both omega_star and omega_d
-            # are independent of velocity space, and we can break the factor
-            # (oo - omega_star) / (oo - omega_d) out of the integral
-            # result agrees well with fully-kinetic expression
-            mom += sp.moment( 1./Teff            )  # <-- this should just return 1 for Maxwellian
+            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            # Boltzmann response f_{1B} independent of ω, so no loop needed
 
-            assert J0sq.shape[3] == 1  # J0^2 independent of omega
-            assert J0sq.shape[4] == 1
-            assert Teff.shape[3] == 1  # Teffective independent of omega
-            assert Teff.shape[4] == 1
-            assert omega_star.shape[3] == 1  # diamagfreq independent of omega
-            assert omega_star.shape[4] == 1
-            assert omega_d.shape[3] == 1  #drift freq independent of omega
-            assert omega_d.shape[4] == 1
+            # bounce-average reduces (s,vperp,vprll) -> (vperp,vprll)
+            # then extend (vperp,vprll) -> (vperp,vprll,k,Re(ω),Im(ω))
+            inv_Teff_BA = self.bounce_average( inv_Teff )
+            inv_Teff_BA = inv_Teff_BA[:,:,np.newaxis,np.newaxis,np.newaxis]
+
+            mom += sp.moment( inv_Teff_BA )
+
+            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            # Gyrotropic response h(...) requires loop over (k,Re(ω),Im(ω))
+            # to properly treat resonant denominator AND bounce averaging
+
+            # Make the J_0^2(...) grid
+            vperp_vth = sp.vperp_vec / sp.vth_perp
+            Jarg = kk5d * vperp_vth[:,np.newaxis,np.newaxis,np.newaxis,np.newaxis]
+            J0 = scipy.special.jv(0, Jarg)
+            J1_J0 = scipy.special.jv(1, Jarg) / J0
+            J2_J0 = scipy.special.jv(2, Jarg) / J0
+            J0sq = J0**2
+            del vperp_vth
+
+            # wavevector, flux-surface-normal unit vectors
+            # to help construct "Boltzmann B-field drift freq"
+            # shape (3,NS_RESOLUTION,vperp,vprll)
+            khat = np.zeros_like(self.bhat)
+            khat[0] = 1.  # poloidal direction along x in cartesian grid
+            psihat = np.cross(self.bhat, khat, axisa=0,axisb=0,axisc=0)
+
+            # construct "Boltzmann B-field drift freq" using four "kernels"
+            # TODO EXPRESSIONS NEED TO BE CHECKED, ONLY FOR TESTING
+            # --ATr,2026may09
+            # TODO om_ups3 uses the identity
+            # \hat{\psi}\hat{\psi}\cddot\del\hat{b} = div(\hat{b})
+            # which is only valid for axisymmetric B field --ATr,2026may09
+            om_ups1 = ( 2 * self.vprll_loc**2 / self.vperp_loc
+                        * np.sum(psihat * self.dbhat_ds, axis=0) )
+            om_ups2 = ( self.vperp_loc / self.Bmag
+                        * np.sum(psihat * self.gradB, axis=0) )
+            om_ups3 = ( - self.vprll_loc / self.Bmag
+                        * np.sum(self.bhat * self.gradB, axis=0) )
+            om_ups4 = ( - 0.5 * self.vprll_loc / self.Bmag
+                        * np.sum(self.bhat * self.gradB, axis=0) )
+            # all get same prefactor
+            Upsilon = -1 * sp.df[np.newaxis,:,:] / dF0_dmu_B
+            om_ups1 *= Teff / Upsilon  # = dF0_dmu_B / (dF0_dE + dF0_dmu_B)
+            om_ups2 *= Teff / Upsilon
+            om_ups3 *= Teff / Upsilon
+            om_ups4 *= Teff / Upsilon
+            # normalize everything to signed Omega_c(s=0)
+            om_ups1 /= sp.Omcs(self.B0)
+            om_ups2 /= sp.Omcs(self.B0)
+            om_ups3 /= sp.Omcs(self.B0)
+            om_ups4 /= sp.Omcs(self.B0)
+
+            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+            # pre-alloc for bounce average and other compute
+            om_bkg   = np.empty_like(self.ssamp, dtype=np.complex128)
+            om_ups   = np.empty_like(self.ssamp, dtype=np.complex128)
+            om_drift = np.empty_like(self.ssamp, dtype=np.complex128)
 
             started = datetime.now()
 
-            # avoid intermediate array alloc
-            # when constructing arrays
-            prep = np.ones((sp.vperp_vec.size, sp.vprll_vec.size, self.k_vec.size),
-                           dtype=np.complex128)
-            minus_J0sq_Teff = -1 * J0sq[:,:,:,0,0] / Teff[:,:,:,0,0]
-            minus_J0sq_Teff = minus_J0sq_Teff.astype(np.complex128)
+            for ii in range(self.k_vec.size):
+                kv  = self.k_vec[ii]  # k_\perp at midplane z=0, suffix 'v' for value
 
-            for ii in range(self.omega_re_vec.size):
-                for jj in range(self.omega_im_vec.size):
+                # shape (s,vperp,vprll)
+                # sqrt(B/B0) allows k_perp to vary along field line
+                om_bkg[:]   = v_bkg   * kv * np.sqrt(B_B0)
+                om_drift[:] = v_drift * kv * np.sqrt(B_B0)
+                om_ups[:] = (
+                    # Pick up extra sign of charge b/c of k_perp
+                    # argument sign for ALL bare J_1 functions
+                    # Omit for J0, J2, and Jarg*J1 (all even functions,
+                    # so the signs cancel)
+                          J1_J0[:,:,ii,0,0] * om_ups1 * np.sign(sp.q)
+                    + 2 * J1_J0[:,:,ii,0,0] * om_ups2 * np.sign(sp.q)
+                    - 4j * J2_J0[:,:,ii,0,0] * om_ups3
+                    - 1j * (Jarg * J1_J0)[:,:,ii,0,0] * om_ups3
+                    + 1j * (Jarg * J1_J0)[:,:,ii,0,0] * om_ups4
+                )
 
-                    #mom[:,ii,jj] += sp.moment(
-                    #        (- J0sq[:,:,:,0,0] / Teff[:,:,:,0,0])
-                    #        * (oo5d[:,:,:,ii,jj] - omega_star[:,:,:,0,0])
-                    #        / (oo5d[:,:,:,ii,jj] - omega_d[:,:,:,0,0])
-                    #)
+                for jj in range(self.omega_re_vec.size):
+                    for mm in range(self.omega_im_vec.size):
+                        omv = self.omega_re_vec[jj] + 1j*self.omega_im_vec[mm]
+                        # bounce-average integral, shape (vperp,vprll)
+                        result_BA = self.bounce_average(
+                            (omv - om_bkg - om_ups) / (omv - om_drift) * inv_Teff
+                        )
+                        # gyrotropic h term's contribution to susceptibility
+                        mom[ii,jj,mm] += sp.moment(
+                            -1 * J0sq[:,:,ii,0,0] * result_BA
+                        )
+                    print('done omega_re ', jj, 'of', self.omega_re_vec.size, 'elapsed', datetime.now()-started)
+                print('done k ', ii, 'of', self.k_vec.size, 'elapsed', datetime.now()-started)
 
-                    # pre-initializing arrays does not make much difference
-                    # from quick tests on personal laptop, maybe ~10% faster
-
-                    prep = minus_J0sq_Teff * (oo5d[:,:,:,ii,jj] - omega_star[:,:,:,0,0])
-                    prep /= (oo5d[:,:,:,ii,jj] - omega_d[:,:,:,0,0])
-                    mom[:,ii,jj] += sp.moment( prep )
-
-                    #print('done omega_im index', jj, 'elapsed', datetime.now()-started)
-
-                print('done omega_re index', ii, 'elapsed', datetime.now()-started)
-
+            # parentheses minimize arithmetic operations
             chi = (2. * omps_Omcs**2 / kk**2) * mom
 
             return chi
@@ -1674,10 +1712,32 @@ class BounceAvgESPerp(object):
         # be very careful about numpy axis positions and broadcasting
         else:
 
-            # MAKE THE J_0^2(...) grid
-            # NOT BOTHERING TO ORGANIZE VARIABLES IN A CONSISTENT STYLE YET
-            # TODO CLEAN UP THIS GARBAGE... too much going on in this function,
-            # there is a risk of inadvertent namespace collisions -ATr,2025nov09
+            # bounce-average reduces (s,vperp,vprll) -> (vperp,vprll)
+            # then extend (vperp,vprll) -> (vperp,vprll,k,Re(ω),Im(ω))
+            inv_Teff_BA = self.bounce_average( inv_Teff )
+            inv_Teff_BA = inv_Teff_BA[:,:,np.newaxis,np.newaxis,np.newaxis]
+
+            # bounce-average integrand needs 1/Teff(s) factor
+            # when background F0 is non-Maxwellian
+
+            # Also multiply by sqrt(B/B0) or (B/B0) to account for kperp
+            # changing along fluxtube, assuming simple flux freezing
+            # TODO DOUBLE CHECK CAREFULLY, NEED FEEDBACK ON THIS --ATr,2025nov13
+
+            ωD_Teff_BA = kk5d * (
+                    self.bounce_average( v_drift * inv_Teff * np.sqrt(B_B0) )
+                    [:,:,np.newaxis,np.newaxis,np.newaxis]
+            )
+            ωbkg_Teff_BA = kk5d * (
+                    self.bounce_average( v_bkg * inv_Teff * np.sqrt(B_B0) )
+                    [:,:,np.newaxis,np.newaxis,np.newaxis]
+            )
+            ωDωbkg_Teff_BA = kk5d**2 * (
+                    self.bounce_average( v_drift * v_bkg * inv_Teff * B_B0 )
+                    [:,:,np.newaxis,np.newaxis,np.newaxis]
+            )
+
+            # Make the J_0^2(...) grid
             vperp_vth = sp.vperp_vec / sp.vth_perp
             Jarg = kk5d * vperp_vth[:,np.newaxis,np.newaxis,np.newaxis,np.newaxis]
             J0sq = scipy.special.jv(0, Jarg)**2
@@ -1689,14 +1749,13 @@ class BounceAvgESPerp(object):
                             self.omega_re_vec.size,
                             self.omega_im_vec.size), dtype=np.complex128)
 
-            mom += sp.moment( 1./Teff * (1. - J0sq)                      )
-            mom += sp.moment( 1./Teff * J0sq *   omega_star              ) * invoo
-            mom += sp.moment( 1./Teff * J0sq * (-omega_d   )             ) * invoo
-            mom += sp.moment( 1./Teff * J0sq *   omega_d    * omega_star ) * invoo**2
+            mom += sp.moment( (1.-J0sq) *    inv_Teff_BA  )
+            mom += sp.moment( J0sq      *   ωbkg_Teff_BA  ) * invoo
+            mom += sp.moment( J0sq      *  (- ωD_Teff_BA) ) * invoo
+            mom += sp.moment( J0sq      * ωDωbkg_Teff_BA  ) * invoo**2
+
             # DROP the higher-order terms in (omega_d/omega)
-            # TODO ADDING (omega_d/omega)^2 terms breaks calculation terribly, WHY? --ATr,2025nov09
-            # it does not seem to converge like I expect, it only works correctly
-            # with the lowest order terms...
+            # which would also need to be explicitly bounce averaged
             #mom += sp.moment( 1./Teff * J0sq * (-omega_d**2)             ) * invoo**2
             #mom += sp.moment( 1./Teff * J0sq *   omega_d**2 * omega_star ) * invoo**3
             #mom += sp.moment( 1./Teff * J0sq * (-omega_d**3)             ) * invoo**3
@@ -1708,17 +1767,14 @@ class BounceAvgESPerp(object):
             #mom += sp.moment( 1./Teff * J0sq * (-omega_d**6)             ) * invoo**6
             #mom += sp.moment( 1./Teff * J0sq *   omega_d**6 * omega_star ) * invoo**7
 
-            # SAME IDEA, BUT DONT APPLY THE EXPANSION
-            # and forget about Teff, just assume Maxwellian
-            # only works for the gravity drift case, so both omega_star and omega_d
+            # DEBUGGING - gravity drift only, so both omega_star and omega_d
             # are independent of velocity space, and we can break the factor
             # (oo - omega_star) / (oo - omega_d) out of the integral
             # result agrees well with fully-kinetic expression
-            # TODO still troubleshooting why taylor expansion in omegaD/omega is so bad...
-            # --ATr,2025nov10
-    #        mom += sp.moment( 1./Teff            )  # <-- this should just return 1 for Maxwellian
-    #        mom += sp.moment( 1./Teff * (- J0sq) ) * (oo + 0.5*kk*epsN) / (oo - kk*G)
+            #mom += sp.moment( 1./Teff            )  # <-- this should just return 1 for Maxwellian
+            #mom += sp.moment( 1./Teff * (- J0sq) ) * (oo + 0.5*kk*epsN) / (oo - kk*G)
 
+            # parentheses minimize arithmetic operations
             chi = (2. * omps_Omcs**2 / kk**2) * mom
 
             return chi
