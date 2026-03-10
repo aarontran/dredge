@@ -1498,27 +1498,7 @@ class BounceAvgESPerp(object):
             #                                 + dF0/dvperp * 1/(m * vperp)
             #       (dF0_dE + 1/B * dF0/dµ) =   dF0/dvperp * 1/(m * vperp)
 
-            # NOTE edge_order=2 is required to get correct Tperp at vperp=0
-            # line, if coordinate array includes vperp=0 exactly.
-            # When using edge_order=1 for isotropic Maxwellian,
-            # resulting Tperp is 2x larger than true value.
-            # --ATr,2026mar04
-            df0_dvperp  = np.gradient(sp.df,      sp.vperp_vec, axis=0, edge_order=2)
-            df0_dvperp2 = np.gradient(df0_dvperp, sp.vperp_vec, axis=0, edge_order=2)
-
-            # need special handling on µ=0 (vperp=0) line
-            # because vperp=0, df/dvperp -> 0 and 1/(m*vperp) -> inf gives
-            # indeterminate limit 0/0; apply l'Hopital's rule to bypass
-            zeromu = (sp.vperp_vec == 0)
-            if np.any(zeromu):
-                inv_Teff = np.empty_like(sp.df)
-                inv_Teff[ zeromu,:] =   df0_dvperp2[zeromu,:] / sp.m
-                inv_Teff[~zeromu,:] = ( df0_dvperp[~zeromu,:]
-                                        / (sp.m * sp.vperp_vec[~zeromu,np.newaxis]) )
-                inv_Teff /= (-1. * sp.df)
-            else:
-                inv_Teff = df0_dvperp / (sp.m * sp.vperp_vec[:,np.newaxis])
-                inv_Teff /= (-1. * sp.df)
+            inv_Teff = -1 * sp.compute_dF0_dEperp() / sp.df
 
             # regions of low phase space density may have df0/dvperp = 0
             # and Teff->infty; enforce ceiling to avoid dividing by zero

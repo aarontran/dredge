@@ -234,3 +234,63 @@ class KineticVDFGrid(Species):
             mom_reduced = np.trapz(x * df_wide, self.vprll_vec, axis=1)
             mom = np.trapz(mom_reduced * 2*np.pi*vperp_wide, self.vperp_vec, axis=0)
         return mom
+
+    # TODO write template methods / extensions for
+    # other distribution functions to help with code testing and structure
+    # --ATr,2026mar08
+
+    def compute_dF0_dEperp(self):
+        """
+        Compute the background distribution function gradient with respect
+        to perpendicular energy, at fixed v_parallel,
+        dF0/d(0.5*m*vperp^2) = 1/(m * vperp) * dF0/d(vperp) |_{vparallel}
+                             = (dF0/dE |_µ + 1/B * dF0/dµ |_E)
+        Returns:
+            dF0/d(0.5*m*vperp^2) |_{vparallel} in dimensionful (CGS) units of
+            1/erg/(cm/s)^3, stored as 2D array of shape (vperp,vprll)
+        """
+        # NOTE edge_order=2 is required to get correct Tperp at vperp=0
+        # line, if coordinate array includes vperp=0 exactly.
+        # When using edge_order=1 for isotropic Maxwellian,
+        # resulting Tperp is 2x larger than true value.
+        # --ATr,2026mar04
+        df0_dvperp  = np.gradient(self.df,    self.vperp_vec, axis=0, edge_order=2)
+        df0_dvperp2 = np.gradient(df0_dvperp, self.vperp_vec, axis=0, edge_order=2)
+
+        # need special handling on µ=0 (vperp=0) line
+        # because vperp=0, df/dvperp -> 0 and 1/(m*vperp) -> inf gives
+        # indeterminate limit 0/0; apply l'Hopital's rule to bypass
+        zeromu = (self.vperp_vec == 0)
+        if np.any(zeromu):
+            df0_dEperp = np.empty_like(self.df)
+            df0_dEperp[ zeromu,:] =   df0_dvperp2[zeromu,:] / self.m
+            df0_dEperp[~zeromu,:] = ( df0_dvperp[~zeromu,:]
+                                      / (self.m * self.vperp_vec[~zeromu,np.newaxis]) )
+        else:
+            df0_dEperp = df0_dvperp / (self.m * self.vperp_vec[:,np.newaxis])
+        return df0_dEperp  # shape (vperp, vprll)
+
+    def compute_dF0_dEprll(self):
+        """
+        Compute the background distribution function gradient with respect
+        to parallel energy, at fixed v_perp,
+        dF0/d(0.5*m*vparallel^2) = 1/(m * vprll) * dF0/d(vprll) |_{vperp}
+                                 = dF0/dE |_µ
+        Returns:
+            dF0/d(0.5*m*vparallel^2) |_{vperp} in dimensionful (CGS) units of
+            1/erg/(cm/s)^3, stored as 2D array of shape (vperp,vprll)
+        """
+        df0_dvprll  = np.gradient(self.df,    self.vprll_vec, axis=1, edge_order=2)
+        df0_dvprll2 = np.gradient(df0_dvprll, self.vprll_vec, axis=1, edge_order=2)
+        # need special handling at pitch angle = 90 deg. (vprll->0) line
+        # because df/dvprll -> 0 and 1/(m*vprll) -> inf gives
+        # indeterminate limit 0/0; apply l'Hopital's rule to bypass
+        pitch90 = (self.vprll_vec == 0)
+        if np.any(pitch90):
+            df0_dEprll = np.empty_like(self.df)
+            df0_dEprll[:, pitch90] =   df0_dvprll2[:,pitch90] / self.m
+            df0_dEprll[:,~pitch90] = ( df0_dvprll[:,~pitch90]
+                                       / (self.m * self.vprll_vec[np.newaxis,~pitch90]) )
+        else:
+            df0_dEprll = df0_dvprll / (self.m * self.vprll_vec[np.newaxis,:])
+        return df0_dEprll  # shape (vperp, vprll)
