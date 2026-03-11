@@ -1535,6 +1535,8 @@ class BounceAvgESPerp(object):
             del sel, _Tmax
 
         Teff = 1./inv_Teff
+        assert np.all(np.isfinite(Teff))  # inf/NaN kills later calculations
+        assert np.all(Teff != 0.)  # 1/0 kills later calculations
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # compute velocities on (s,vperp,vprll) grid
@@ -1635,38 +1637,70 @@ class BounceAvgESPerp(object):
             khat[0] = 1.  # poloidal direction along x in cartesian grid
             psihat = np.cross(self.bhat, khat, axisa=0,axisb=0,axisc=0)
 
+            # construct "anisotropy temperature" which measures
+            # pitch-angle dependent structure
+            Upsilon = -1 * sp.df[np.newaxis,:,:] / dF0_dmu_B
+            # we need ceiling here....
+            if Teff_ceiling is not None:
+                _Tmax = Teff_ceiling / (0.5 * sp.m * sp.vth_perp**2)  # make dimensionless
+                Upsilon[Upsilon >=    _Tmax] =    _Tmax
+                Upsilon[Upsilon <= -1*_Tmax] = -1*_Tmax
+                del _Tmax
+            assert np.all(np.isfinite(Upsilon))  # inf/NaN kills later calculations
+            assert np.all(Upsilon != 0.)  # 1/0 kills later calculations
+            # Note Teff is already ceiling'ed
+            Lam_Ups = Teff / Upsilon
+
+            # Another way, but need sensible ceiling and floor too...
+            #Lam_Ups = dF0_dmu_B / (dF0_dE + dF0_dmu_B)
+            #Lam_Ups[~np.isfinite(Lam_Ups)] = 0.  # stupid hack
+
             # construct "Boltzmann B-field drift freq" using four "kernels"
+            # on grid (s,vperp,vprll)
             # TODO EXPRESSIONS NEED TO BE CHECKED, ONLY FOR TESTING
             # --ATr,2026may09
+            # omega_ups1 at vperp=0 requires special handling to avoid division
+            # by zero, see farther below
+            _sel = self.vperp_loc != 0
+            om_ups1_kernel = np.zeros_like(self.ssamp)
+            om_ups1_kernel[_sel] = (
+                           2 * self.vprll_loc**2 / self.vperp_loc
+                           * np.sum(psihat * self.dbhat_ds, axis=0)
+            )[_sel]
+            del _sel
+            om_ups2_kernel = ( self.vperp_loc / self.Bmag
+                               * np.sum(psihat * self.gradB, axis=0) )
             # TODO om_ups3 uses the identity
             # \hat{\psi}\hat{\psi}\cddot\del\hat{b} = div(\hat{b})
             # which is only valid for axisymmetric B field --ATr,2026may09
-            om_ups1 = ( 2 * self.vprll_loc**2 / self.vperp_loc
-                        * np.sum(psihat * self.dbhat_ds, axis=0) )
-            om_ups2 = ( self.vperp_loc / self.Bmag
-                        * np.sum(psihat * self.gradB, axis=0) )
-            om_ups3 = ( - self.vprll_loc / self.Bmag
-                        * np.sum(self.bhat * self.gradB, axis=0) )
-            om_ups4 = ( - 0.5 * self.vprll_loc / self.Bmag
-                        * np.sum(self.bhat * self.gradB, axis=0) )
-            # all get same prefactor
-            Upsilon = -1 * sp.df[np.newaxis,:,:] / dF0_dmu_B
-            om_ups1 *= Teff / Upsilon  # = dF0_dmu_B / (dF0_dE + dF0_dmu_B)
-            om_ups2 *= Teff / Upsilon
-            om_ups3 *= Teff / Upsilon
-            om_ups4 *= Teff / Upsilon
-            # normalize everything to signed Omega_c(s=0)
-            om_ups1 /= sp.Omcs(self.B0)
-            om_ups2 /= sp.Omcs(self.B0)
-            om_ups3 /= sp.Omcs(self.B0)
-            om_ups4 /= sp.Omcs(self.B0)
+            om_ups3_kernel = ( - self.vprll_loc / self.Bmag
+                               * np.sum(self.bhat * self.gradB, axis=0) )
+            om_ups4_kernel = ( - 0.5 * self.vprll_loc / self.Bmag
+                               * np.sum(self.bhat * self.gradB, axis=0) )
+            # attach anisotropy prefactor
+            # and make dimensionless, normalize to _signed_ Omega_cs(s=0)
+            om_ups1_kernel *= Lam_Ups / sp.Omcs(self.B0)
+            om_ups2_kernel *= Lam_Ups / sp.Omcs(self.B0)
+            om_ups3_kernel *= Lam_Ups / sp.Omcs(self.B0)
+            om_ups4_kernel *= Lam_Ups / sp.Omcs(self.B0)
 
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
             # pre-alloc for bounce average and other compute
             om_bkg   = np.empty_like(self.ssamp, dtype=np.complex128)
-            om_ups   = np.empty_like(self.ssamp, dtype=np.complex128)
             om_drift = np.empty_like(self.ssamp, dtype=np.complex128)
+            om_ups1  = np.empty_like(self.ssamp, dtype=np.complex128)
+            om_ups2  = np.empty_like(self.ssamp, dtype=np.complex128)
+            om_ups3  = np.empty_like(self.ssamp, dtype=np.complex128)
+            om_ups4  = np.empty_like(self.ssamp, dtype=np.complex128)
+            om_ups   = np.empty_like(self.ssamp, dtype=np.complex128)
+            result_BA = np.empty_like(sp.df, dtype=np.complex128)
+
+            # avoid type conversions in tight loops;
+            # one-off tests on personal mac show ~10% speedup
+            # explicit cast: {6.9, 7.0, 7.14, 7.22} sec
+            # no cast: {7.9, 7.37, 7.15, 9.32} sec
+            inv_Teff = inv_Teff.astype(np.complex128)
 
             started = datetime.now()
 
@@ -1675,25 +1709,38 @@ class BounceAvgESPerp(object):
 
                 # shape (s,vperp,vprll)
                 # sqrt(B/B0) allows k_perp to vary along field line
+                # In omega_Upsilon, need sign(q) for ALL bare J_1 functions b/c
+                # k_perp norm uses abs(Omega_cs).
+                # Omit for J0, J2, Jarg*J1 (even functions of k_perp).
                 om_bkg[:]   = v_bkg   * kv * np.sqrt(B_B0)
                 om_drift[:] = v_drift * kv * np.sqrt(B_B0)
-                om_ups[:] = (
-                    # Pick up extra sign of charge b/c of k_perp
-                    # argument sign for ALL bare J_1 functions
-                    # Omit for J0, J2, and Jarg*J1 (all even functions,
-                    # so the signs cancel)
-                          J1_J0[:,:,ii,0,0] * om_ups1 * np.sign(sp.q)
-                    + 2 * J1_J0[:,:,ii,0,0] * om_ups2 * np.sign(sp.q)
-                    - 4j * J2_J0[:,:,ii,0,0] * om_ups3
-                    - 1j * (Jarg * J1_J0)[:,:,ii,0,0] * om_ups3
-                    + 1j * (Jarg * J1_J0)[:,:,ii,0,0] * om_ups4
-                )
+
+                om_ups1[:] =         J1_J0[:,:,ii,0,0] * om_ups1_kernel * np.sign(sp.q)
+                # Use Taylor expansion of J_1(..) because J_1 / v_\perp
+                # -> 0/0 is indefinite
+                om_ups1[self.vperp_loc==0] = (
+                        (kk5d / J0)[:,:,ii,0,0] * Lam_Ups * self.vprll_loc**2
+                        * np.sum(psihat * self.dbhat_ds, axis=0)
+                        / sp.vth_perp / abs(sp.Omcs(self.B0))  # "standard" normalization
+                        * np.sign(sp.q)  # re-attach the charge sign
+                        / np.sqrt(B_B0)  # because "plain" k_perp/Omega0 appears without
+                                         # v_perp factor, it's no longer bounce invariant,
+                                         # we need to reattach B(s)/B0 factor
+                        # This assignment must follow (cannot precede)
+                        # the om_ups1[:] = ... statement
+                )[self.vperp_loc==0]  # notice duplicate selector needed here
+                om_ups2[:] =    2  * J1_J0[:,:,ii,0,0] * om_ups2_kernel * np.sign(sp.q)
+                om_ups3[:] = (- 4j * J2_J0[:,:,ii,0,0] * om_ups3_kernel
+                              - 1j * (Jarg * J1_J0)[:,:,ii,0,0] * om_ups3_kernel )
+                om_ups4[:] =    1j * (Jarg * J1_J0)[:,:,ii,0,0] * om_ups4_kernel
+
+                om_ups [:] = om_ups1 + om_ups2 + om_ups3 + om_ups4
 
                 for jj in range(self.omega_re_vec.size):
                     for mm in range(self.omega_im_vec.size):
                         omv = self.omega_re_vec[jj] + 1j*self.omega_im_vec[mm]
                         # bounce-average integral, shape (vperp,vprll)
-                        result_BA = self.bounce_average(
+                        result_BA[:] = self.bounce_average(
                             (omv - om_bkg - om_ups) / (omv - om_drift) * inv_Teff
                         )
                         # gyrotropic h term's contribution to susceptibility
