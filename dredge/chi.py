@@ -1446,7 +1446,8 @@ class BounceAvgESPerp(object):
 
         return result
 
-    def chi_GK(self, epsilonN, ns, Gforce, Teff_ceiling=None, loop=False):
+    def chi_GK(self, epsilonN, ns, Gforce, Teff_ceiling=None, loop=False,
+               enable_Upsilon=False):
         """
         Compute gyro-averaged, GK-ordered susceptibility for exactly
         perpendicular electrostatic waves
@@ -1462,6 +1463,7 @@ class BounceAvgESPerp(object):
                 doing massive broadcasted arrays?
                 Costly, but it helps us handle resonant denominator without
                 approximating omega_d/omega << 1.
+            enable_Upsilon = enable experimental new drift term?
         """
         sp = self.species
         omps_Omcs = sp.omps(ns) / sp.Omcs(self.B0)
@@ -1740,9 +1742,14 @@ class BounceAvgESPerp(object):
                     for mm in range(self.omega_im_vec.size):
                         omv = self.omega_re_vec[jj] + 1j*self.omega_im_vec[mm]
                         # bounce-average integral, shape (vperp,vprll)
-                        result_BA[:] = self.bounce_average(
-                            (omv - om_bkg - om_ups) / (omv - om_drift) * inv_Teff
-                        )
+                        if enable_Upsilon:
+                            result_BA[:] = self.bounce_average(
+                                (omv - om_bkg - om_ups) / (omv - om_drift) * inv_Teff
+                            )
+                        else:
+                            result_BA[:] = self.bounce_average(
+                                (omv - om_bkg) / (omv - om_drift) * inv_Teff
+                            )
                         # gyrotropic h term's contribution to susceptibility
                         mom[ii,jj,mm] += sp.moment(
                             -1 * J0sq[:,:,ii,0,0] * result_BA
