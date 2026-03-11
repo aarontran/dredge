@@ -1576,6 +1576,62 @@ class BounceAvgESPerp(object):
         # need charge sign factor to work with k normalization
         v_drift += (self.v_curv [0,...]/sp.vth_perp) * np.sign(sp.Omcs(self.B0))
 
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # assemble "Boltzmann B-field drift freq" using four "kernels"
+        # on grid (s,vperp,vprll), focusing on factors that can be computed
+        # without knowledge of k_\perp and \omega
+
+        # wavevector, flux-surface-normal unit vectors
+        # to help construct "Boltzmann B-field drift freq"
+        # shape (3,NS_RESOLUTION,vperp,vprll)
+        khat = np.zeros_like(self.bhat)
+        khat[0] = 1.  # poloidal direction along x in cartesian grid
+        psihat = np.cross(self.bhat, khat, axisa=0,axisb=0,axisc=0)
+
+        # construct "anisotropy temperature" which measures
+        # pitch-angle dependent structure
+        Upsilon = -1 * sp.df[np.newaxis,:,:] / dF0_dmu_B
+        # we need ceiling here....
+        if Teff_ceiling is not None:
+            _Tmax = Teff_ceiling / (0.5 * sp.m * sp.vth_perp**2)  # make dimensionless
+            Upsilon[Upsilon >=    _Tmax] =    _Tmax
+            Upsilon[Upsilon <= -1*_Tmax] = -1*_Tmax
+            del _Tmax
+        assert np.all(np.isfinite(Upsilon))  # inf/NaN kills later calculations
+        assert np.all(Upsilon != 0.)  # 1/0 kills later calculations
+        # Note Teff is already ceiling'ed
+        Lam_Ups = Teff / Upsilon
+        # Another way, but need sensible ceiling and floor too...
+        #Lam_Ups = dF0_dmu_B / (dF0_dE + dF0_dmu_B)
+        #Lam_Ups[~np.isfinite(Lam_Ups)] = 0.  # stupid hack
+
+        # TODO EXPRESSIONS NEED TO BE CHECKED, ONLY FOR TESTING
+        # --ATr,2026may09
+        # omega_ups1 at vperp=0 requires special handling to avoid division
+        # by zero, see farther below
+        _sel = self.vperp_loc != 0
+        om_ups1_kernel = np.zeros_like(self.ssamp)
+        om_ups1_kernel[_sel] = (
+                       2 * self.vprll_loc**2 / self.vperp_loc
+                       * np.sum(psihat * self.dbhat_ds, axis=0)
+        )[_sel]
+        del _sel
+        om_ups2_kernel = ( 2 * self.vperp_loc / self.Bmag
+                           * np.sum(psihat * self.gradB, axis=0) )
+        # TODO om_ups3 uses the identity
+        # \hat{\psi}\hat{\psi}\cddot\del\hat{b} = div(\hat{b})
+        # which is only valid for axisymmetric B field --ATr,2026may09
+        om_ups3_kernel = ( 1j * self.vprll_loc / self.Bmag
+                           * np.sum(self.bhat * self.gradB, axis=0) )
+        om_ups4_kernel = ( - 0.5 * 1j * self.vprll_loc / self.Bmag
+                           * np.sum(self.bhat * self.gradB, axis=0) )
+        # attach anisotropy prefactor
+        # and make dimensionless, normalize to _signed_ Omega_cs(s=0)
+        om_ups1_kernel *= Lam_Ups / sp.Omcs(self.B0)
+        om_ups2_kernel *= Lam_Ups / sp.Omcs(self.B0)
+        om_ups3_kernel *= Lam_Ups / sp.Omcs(self.B0)
+        om_ups4_kernel *= Lam_Ups / sp.Omcs(self.B0)
+
         # -------------------------------------------
         # to make integral tractable,
         # expand the 1/(omega - omega_drift) term
@@ -1605,6 +1661,15 @@ class BounceAvgESPerp(object):
         # TODO want to parallelize this
         if loop:
 
+            # Make the J_0^2(...) grid
+            vperp_vth = sp.vperp_vec / sp.vth_perp
+            Jarg = kk5d * vperp_vth[:,np.newaxis,np.newaxis,np.newaxis,np.newaxis]
+            J0 = scipy.special.jv(0, Jarg)
+            J1_J0 = scipy.special.jv(1, Jarg) / J0
+            J2_J0 = scipy.special.jv(2, Jarg) / J0
+            J0sq = J0**2
+            del vperp_vth
+
             mom = np.zeros((self.k_vec.size,
                             self.omega_re_vec.size,
                             self.omega_im_vec.size), dtype=np.complex128)
@@ -1622,71 +1687,6 @@ class BounceAvgESPerp(object):
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
             # Gyrotropic response h(...) requires loop over (k,Re(ω),Im(ω))
             # to properly treat resonant denominator AND bounce averaging
-
-            # Make the J_0^2(...) grid
-            vperp_vth = sp.vperp_vec / sp.vth_perp
-            Jarg = kk5d * vperp_vth[:,np.newaxis,np.newaxis,np.newaxis,np.newaxis]
-            J0 = scipy.special.jv(0, Jarg)
-            J1_J0 = scipy.special.jv(1, Jarg) / J0
-            J2_J0 = scipy.special.jv(2, Jarg) / J0
-            J0sq = J0**2
-            del vperp_vth
-
-            # wavevector, flux-surface-normal unit vectors
-            # to help construct "Boltzmann B-field drift freq"
-            # shape (3,NS_RESOLUTION,vperp,vprll)
-            khat = np.zeros_like(self.bhat)
-            khat[0] = 1.  # poloidal direction along x in cartesian grid
-            psihat = np.cross(self.bhat, khat, axisa=0,axisb=0,axisc=0)
-
-            # construct "anisotropy temperature" which measures
-            # pitch-angle dependent structure
-            Upsilon = -1 * sp.df[np.newaxis,:,:] / dF0_dmu_B
-            # we need ceiling here....
-            if Teff_ceiling is not None:
-                _Tmax = Teff_ceiling / (0.5 * sp.m * sp.vth_perp**2)  # make dimensionless
-                Upsilon[Upsilon >=    _Tmax] =    _Tmax
-                Upsilon[Upsilon <= -1*_Tmax] = -1*_Tmax
-                del _Tmax
-            assert np.all(np.isfinite(Upsilon))  # inf/NaN kills later calculations
-            assert np.all(Upsilon != 0.)  # 1/0 kills later calculations
-            # Note Teff is already ceiling'ed
-            Lam_Ups = Teff / Upsilon
-
-            # Another way, but need sensible ceiling and floor too...
-            #Lam_Ups = dF0_dmu_B / (dF0_dE + dF0_dmu_B)
-            #Lam_Ups[~np.isfinite(Lam_Ups)] = 0.  # stupid hack
-
-            # construct "Boltzmann B-field drift freq" using four "kernels"
-            # on grid (s,vperp,vprll)
-            # TODO EXPRESSIONS NEED TO BE CHECKED, ONLY FOR TESTING
-            # --ATr,2026may09
-            # omega_ups1 at vperp=0 requires special handling to avoid division
-            # by zero, see farther below
-            _sel = self.vperp_loc != 0
-            om_ups1_kernel = np.zeros_like(self.ssamp)
-            om_ups1_kernel[_sel] = (
-                           2 * self.vprll_loc**2 / self.vperp_loc
-                           * np.sum(psihat * self.dbhat_ds, axis=0)
-            )[_sel]
-            del _sel
-            om_ups2_kernel = ( self.vperp_loc / self.Bmag
-                               * np.sum(psihat * self.gradB, axis=0) )
-            # TODO om_ups3 uses the identity
-            # \hat{\psi}\hat{\psi}\cddot\del\hat{b} = div(\hat{b})
-            # which is only valid for axisymmetric B field --ATr,2026may09
-            om_ups3_kernel = ( - self.vprll_loc / self.Bmag
-                               * np.sum(self.bhat * self.gradB, axis=0) )
-            om_ups4_kernel = ( - 0.5 * self.vprll_loc / self.Bmag
-                               * np.sum(self.bhat * self.gradB, axis=0) )
-            # attach anisotropy prefactor
-            # and make dimensionless, normalize to _signed_ Omega_cs(s=0)
-            om_ups1_kernel *= Lam_Ups / sp.Omcs(self.B0)
-            om_ups2_kernel *= Lam_Ups / sp.Omcs(self.B0)
-            om_ups3_kernel *= Lam_Ups / sp.Omcs(self.B0)
-            om_ups4_kernel *= Lam_Ups / sp.Omcs(self.B0)
-
-            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
             # pre-alloc for bounce average and other compute
             om_bkg   = np.empty_like(self.ssamp, dtype=np.complex128)
@@ -1731,10 +1731,10 @@ class BounceAvgESPerp(object):
                         # This assignment must follow (cannot precede)
                         # the om_ups1[:] = ... statement
                 )[self.vperp_loc==0]  # notice duplicate selector needed here
-                om_ups2[:] =    2  * J1_J0[:,:,ii,0,0] * om_ups2_kernel * np.sign(sp.q)
-                om_ups3[:] = (- 4j * J2_J0[:,:,ii,0,0] * om_ups3_kernel
-                              - 1j * (Jarg * J1_J0)[:,:,ii,0,0] * om_ups3_kernel )
-                om_ups4[:] =    1j * (Jarg * J1_J0)[:,:,ii,0,0] * om_ups4_kernel
+                om_ups2[:] =            J1_J0 [:,:,ii,0,0] * om_ups2_kernel * np.sign(sp.q)
+                om_ups3[:] = (      4 * J2_J0 [:,:,ii,0,0] * om_ups3_kernel
+                              + (Jarg * J1_J0)[:,:,ii,0,0] * om_ups3_kernel )
+                om_ups4[:] =    (Jarg * J1_J0)[:,:,ii,0,0] * om_ups4_kernel
 
                 om_ups [:] = om_ups1 + om_ups2 + om_ups3 + om_ups4
 
@@ -1766,6 +1766,15 @@ class BounceAvgESPerp(object):
         # be very careful about numpy axis positions and broadcasting
         else:
 
+            # Make the J_0^2(...) grid
+            vperp_vth = sp.vperp_vec / sp.vth_perp
+            Jarg = kk5d * vperp_vth[:,np.newaxis,np.newaxis,np.newaxis,np.newaxis]
+            J0 = scipy.special.jv(0, Jarg)
+            J1_J0 = scipy.special.jv(1, Jarg) / J0
+            J2_J0 = scipy.special.jv(2, Jarg) / J0
+            J0sq = J0**2
+            del vperp_vth
+
             # bounce-average reduces (s,vperp,vprll) -> (vperp,vprll)
             # then extend (vperp,vprll) -> (vperp,vprll,k,Re(ω),Im(ω))
             inv_Teff_BA = self.bounce_average( inv_Teff )
@@ -1791,11 +1800,37 @@ class BounceAvgESPerp(object):
                     [:,:,np.newaxis,np.newaxis,np.newaxis]
             )
 
-            # Make the J_0^2(...) grid
-            vperp_vth = sp.vperp_vec / sp.vth_perp
-            Jarg = kk5d * vperp_vth[:,np.newaxis,np.newaxis,np.newaxis,np.newaxis]
-            J0sq = scipy.special.jv(0, Jarg)**2
-            del vperp_vth, Jarg
+            # Construct Upsilon drift bounce average terms,
+            # being careful/crafty to avoid slamming memory with 4D arrays
+            # TODO omega_ups1 treatment of vperp=0 line is not correct
+            # but this code is ugly enough as it is
+            #ωups1_Teff_BA  = self.bounce_average( om_ups1_kernel * inv_Teff )
+            #ωups2_Teff_BA  = self.bounce_average( om_ups2_kernel * inv_Teff )
+            #ωups3a_Teff_BA = self.bounce_average( om_ups3_kernel * inv_Teff )
+            #ωups3b_Teff_BA = self.bounce_average( om_ups3_kernel * inv_Teff )
+            #ωups4_Teff_BA  = self.bounce_average( om_ups4_kernel * inv_Teff )
+            ####
+            #ωups1_Teff_BA  = ωups1_Teff_BA [:,:,np.newaxis,np.newaxis,np.newaxis]
+            #ωups2_Teff_BA  = ωups2_Teff_BA [:,:,np.newaxis,np.newaxis,np.newaxis]
+            #ωups3a_Teff_BA = ωups3a_Teff_BA[:,:,np.newaxis,np.newaxis,np.newaxis]
+            #ωups3b_Teff_BA = ωups3b_Teff_BA[:,:,np.newaxis,np.newaxis,np.newaxis]
+            #ωups4_Teff_BA  = ωups4_Teff_BA [:,:,np.newaxis,np.newaxis,np.newaxis]
+            ## attach k_perp dependent factors
+            ## need sign(q) for ALL bare J_1 functions b/c
+            ## k_perp norm uses abs(Omega_cs).
+            ## Omit for J0, J2, Jarg*J1 (even functions of k_perp).
+            #ωups1_Teff_BA  *= J1_J0 * np.sign(sp.q)
+            #ωups2_Teff_BA  *= J1_J0 * np.sign(sp.q)
+            #ωups3a_Teff_BA *= 4 * J2_J0
+            #ωups3b_Teff_BA *= (Jarg * J1_J0)
+            #ωups4_Teff_BA  *= (Jarg * J1_J0)
+            ## final assembly
+            #ωups_Teff_BA = (   ωups1_Teff_BA  + ωups2_Teff_BA + ωups3a_Teff_BA
+            #                 + ωups3b_Teff_BA + ωups4_Teff_BA )
+
+            # TODO implement same for the cross term
+            # which would replace ωDωbkg_Teff_BA
+            # but this becomes terribly ugly --ATr,2026mar10
 
             invoo = 1./oo  # 3D array use outside VDF integral
 
