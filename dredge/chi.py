@@ -1293,6 +1293,13 @@ class BounceAvgESPerp(object):
                 * np.cross(self.bhat, self.dbhat_ds, axisa=0,axisb=0,axisc=0)
         )
 
+        # Need this second-order gradient to evaluate bounce integral in the
+        # limit vprll->0
+        # TODO MIGHT NEED HIGHER ORDER EDGE STENCILS FOR THIS?
+        dB_ds2 = np.gradient(np.gradient(fld.Bmag, fld.s, edge_order=2),
+                             fld.s, edge_order=2)
+        self.dB_ds2_origin = dB_ds2[0]  # scalar
+
         # used to normalize bounce integral.
         # to be honest, the user should probably call this with
         # whatever integration method they want....
@@ -1350,14 +1357,10 @@ class BounceAvgESPerp(object):
             # limiting form of bounce-average integral near the singularity,
             # valid for the case x=1, but TODO MAY NOT BE CORRECT FOR x(s)
             # spatially varying........ --ATr,2025nov06
-            # MIGHT NEED HIGHER ORDER EDGE STENCILS FOR THIS.
-            dB_ds2 = np.gradient(np.gradient(fld.Bmag, fld.s, edge_order=2),
-                                 fld.s, edge_order=2)
-            dB_ds2_origin = dB_ds2[0]
             if x.shape[1] == self.ssamp.shape[1]:  # computed x on full v_parallel grid
                 result[:, pitch90] = (
                     (x[...,0])[:,pitch90]  # cannot use [:,pitch90,0] b/c mixing selector functions
-                    * np.pi/2 * (sp.mass / dB_ds2_origin)**0.5 / (self.mu[:,pitch90])**0.5
+                    * np.pi/2 * (sp.mass / self.dB_ds2_origin)**0.5 / (self.mu[:,pitch90])**0.5
                 )
             elif x.shape[1] == 1:  # x is independent of v_parallel, we broadcast along coordinate
                 assert np.where(pitch90)[0].size == 1
@@ -1365,7 +1368,7 @@ class BounceAvgESPerp(object):
                 # TODO handle ugly divide by zero warning -ATr,2025nov06
                 result[:, jj] = (
                     x[:,0,0]
-                    * np.pi/2 * (sp.mass / dB_ds2_origin)**0.5 / (self.mu[:,jj])**0.5
+                    * np.pi/2 * (sp.mass / self.dB_ds2_origin)**0.5 / (self.mu[:,jj])**0.5
                 )
             else:
                 raise Exception('got bad x shape {}'.format(x.shape))
