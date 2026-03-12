@@ -18,6 +18,7 @@ from .special import Zfunc
 from .species import Species, KineticVDFGrid
 from .field import FieldLineVec
 from .const import CLIGHT
+from .bavg import _bounce_average_njit_kernel
 
 # beware... changing temperature, mass, charge,
 # ... requires re-computing bessel functions...
@@ -1469,7 +1470,7 @@ class BounceAvgESPerp(object):
         Return:
             shape (vperp, vprll)
         """
-        return self._bounce_average_njit_kernel(
+        return _bounce_average_njit_kernel(
                 x_grid         = x,
                 Bsamp_grid     = self.Bmag,
                 s_grid         = self.ssamp,
@@ -1483,86 +1484,6 @@ class BounceAvgESPerp(object):
                 tbounce4th_max = self.TBOUNCE4TH_MAX,
                 norm           = norm
         )
-
-    @staticmethod
-    @numba.njit(parallel=True)
-    def _bounce_average_njit_kernel(x_grid, Bsamp_grid, s_grid, E_grid,
-                                    mu_grid, vperp_vec, vprll_vec, mass,
-                                    dB_ds2_origin, tbounce4th, tbounce4th_max,
-                                    norm=True):
-        """
-        Internal function to compute the bounce average, hottest logic
-        Input:
-            x_grid = quantity to be averaged; shape (vperp,vprll,s)
-            Bsamp_grid = B field magnitude on grid (vperp,vprll,s)
-            s_grid = s coordinates on grid (vperp,vprll,s)
-                     recall that field-line integration points may differ in
-                     velocity space b/c turning-point location varies
-            E_grid = energy on grid (vperp,vprll)
-            mu_grid = magnetic moment on grid (vperp,vprll)
-            vperp_vec = v_\perp coordinates in cm/s, 1D array
-            vprll_vec = v_\parallel coordinates in cm/s, 1D array
-            mass = particle species mass in grams, scalar
-            dB_ds2_origin = d^2(B)/ds^2 evaluated at s=0, scalar, used to help
-                            evaluate limit vprll->0 (with vperp=finite)
-            tbounce4th = shape (vperp,vprll) grid of bounce times
-            tbounce4th_max = upper limit on quarter bounce time
-            norm = normalize?
-        Return:
-            shape (vperp, vprll)
-        """
-        result = np.empty((vperp_vec.size, vprll_vec.size), dtype=x_grid.dtype)
-
-        for ii in numba.prange(vperp_vec.size):
-            for jj in numba.prange(vprll_vec.size):
-                x_vec = x_grid    [ii,jj,:]  # NOTE (s,vperp,vprll) shape
-                B_vec = Bsamp_grid[ii,jj,:]  # doesn't play nice with numba
-                s_vec = s_grid    [ii,jj,:]  # compilation of np.trapz
-                E     = E_grid    [ii,jj]    # b/c [:,ii,jj] data not contiguous in c ordering
-                mu    = mu_grid   [ii,jj]
-                # common case; breaks with divide-by-zero or huge number
-                # for vprll=0 (pitch angle 90)
-                # singular line requires separate handling for vperp=0 or vperp>0
-                integrand = x_vec / np.sqrt( (2./mass)*(E - mu*B_vec) )
-                result[ii,jj] = np.trapz(integrand, s_vec)
-
-        # special case handling
-        muzero = (vperp_vec == 0)
-        pitch90 = (vprll_vec == 0)
-
-        # handle vprll=0 line with special remainder loop
-        if np.any(pitch90):
-            assert np.where(pitch90)[0].size == 1
-            jj = np.where(pitch90)[0][0]
-            for ii in range(vperp_vec.size):
-                # prevent exactly zero; the zero case will be dealt with later
-                mu = max(1e-99,mu_grid[ii,jj])
-                # limiting form of bounce-average integral near the singularity,
-                # valid for the case x=1, but TODO MAY NOT BE CORRECT FOR x(s)
-                # spatially varying........ --ATr,2025nov06
-                result[ii,jj] = x_grid[ii,jj,0] * np.pi/2 * np.sqrt(mass / dB_ds2_origin / mu)
-
-        # apply normalization BEFORE the singular point handling
-        if norm:
-            result /= tbounce4th
-
-        # handle zero point specially
-        if np.any(muzero) and np.any(pitch90):
-            assert np.where(muzero)[0].size == 1
-            assert np.where(pitch90)[0].size == 1
-            ii = np.where(muzero)[0][0]
-            jj = np.where(pitch90)[0][0]
-            if norm:
-                # force to the moment's value at s=0 at singular point??
-                # TODO is this correct???
-                result[ii,jj] = x_grid[ii,jj,0]
-            else:
-                # this treatment is only valid when x=1
-                # as used when computing bounce orbit periods
-                assert x_grid[ii,jj,0] == 1.
-                result[ii,jj] = min(tbounce4th_max, np.nanmax(result))
-
-        return result
 
     def chi_GK(self, epsilonN, ns, Gforce, Teff_ceiling=None, loop=False,
                enable_Upsilon=False):
@@ -1788,7 +1709,7 @@ class BounceAvgESPerp(object):
 
             # bounce-average reduces (vperp,vprll) -> (vperp,vprll,s)
             # then extend (vperp,vprll) -> (k,Re(ω),Im(ω),vperp,vprll)
-            inv_Teff_BA = self.bounce_average( inv_Teff )
+            inv_Teff_BA = self.bounce_average_njit( inv_Teff )
             inv_Teff_BA = inv_Teff_BA[np.newaxis,np.newaxis,np.newaxis,:,:]
 
             mom += sp.moment( inv_Teff_BA )
@@ -1811,10 +1732,7 @@ class BounceAvgESPerp(object):
             # one-off tests on personal mac show ~10% speedup
             # explicit cast: {6.9, 7.0, 7.14, 7.22} sec
             # no cast: {7.9, 7.37, 7.15, 9.32} sec
-            inv_Teff = inv_Teff.astype(np.complex128)
-
-            # avoid complex->real casting
-            self.ssamp = self.ssamp.astype(np.complex128)
+            #inv_Teff = inv_Teff.astype(np.complex128)  # moved down to function call
 
             started = datetime.now()
 
@@ -1850,23 +1768,40 @@ class BounceAvgESPerp(object):
 
                 om_ups [:] = om_ups1 + om_ups2 + om_ups3 + om_ups4
 
-                for jj in range(self.omega_re_vec.size):
-                    for mm in range(self.omega_im_vec.size):
-                        omv = self.omega_re_vec[jj] + 1j*self.omega_im_vec[mm]
-                        # bounce-average integral, shape (vperp,vprll)
-                        if enable_Upsilon:
-                            result_BA[:] = self.bounce_average(
-                                (omv - om_bkg - om_ups) / (omv - om_drift) * inv_Teff
-                            )
-                        else:
-                            result_BA[:] = self.bounce_average(
-                                (omv - om_bkg) / (omv - om_drift) * inv_Teff
-                            )
-                        # gyrotropic h term's contribution to susceptibility
-                        mom[ii,jj,mm] += sp.moment(
-                            -1 * J0sq[ii,0,0,:,:] * result_BA
-                        )
-                    print('done omega_re ', jj, 'of', self.omega_re_vec.size, 'elapsed', datetime.now()-started)
+                # choose whether to use experimental Upsilon term???
+                if enable_Upsilon:
+                    om_bkg += om_ups
+
+                # combine the prefactor to plug into bounce integrand
+                # J0sq can be factored out, but cleaner to keep together
+                minus_J0sq_Teff = -1 * J0sq[ii,0,0,:,:,np.newaxis] * inv_Teff
+                minus_J0sq_Teff = minus_J0sq_Teff.astype(np.complex128)
+
+                result_re, result_im = self._chi_GK_kernel(
+                #result = _chi_GK_kernel(
+                    omega_re_vec    = self.omega_re_vec,
+                    omega_im_vec    = self.omega_im_vec,
+                    om_bkg          = om_bkg,
+                    om_drift        = om_drift,
+                    minus_J0sq_Teff = minus_J0sq_Teff,
+                    df              = self.species.df,
+                    ########################
+                    # below args passed to _bounce_average_njit_kernel
+                    Bsamp_grid     = self.Bmag,
+                    s_grid         = self.ssamp,
+                    E_grid         = self.E,
+                    mu_grid        = self.mu,
+                    vperp_vec      = self.species.vperp_vec,
+                    vprll_vec      = self.species.vprll_vec,
+                    mass           = self.species.mass,
+                    dB_ds2_origin  = self.dB_ds2_origin,
+                    tbounce4th     = self.tbounce4th,
+                    tbounce4th_max = self.TBOUNCE4TH_MAX,
+                )
+
+                mom[ii,:,:] += (result_re + 1j*result_im)
+                #mom[ii,:,:] += (result)
+
                 print('done k ', ii, 'of', self.k_vec.size, 'elapsed', datetime.now()-started)
 
             # parentheses minimize arithmetic operations
@@ -1979,3 +1914,96 @@ class BounceAvgESPerp(object):
             chi = (2. * omps_Omcs**2 / kk**2) * mom
 
             return chi
+
+    @staticmethod
+    @numba.njit(parallel=True)
+    def _chi_GK_kernel(
+            omega_re_vec,
+            omega_im_vec,
+            om_bkg,
+            om_drift,
+            minus_J0sq_Teff,
+            df,
+            ########################
+            Bsamp_grid,
+            s_grid,
+            E_grid,
+            mu_grid,
+            vperp_vec,
+            vprll_vec,
+            mass,
+            dB_ds2_origin,
+            tbounce4th,
+            tbounce4th_max,
+    ):
+        """
+        Core compute loops+kernel for GK-ordered susceptibility.  Compute the
+        gyrotropic "h" response, without resonant denominator expansion.
+
+        Input:
+            omega_re_vec = 1D array
+            omega_im_vec = 1D array
+            om_bkg = ndarray shape (vperp,vprll,s)
+            om_drift = ndarray shape (vperp,vprll,s)
+            minus_J0sq_Teff = ndarray shape (vperp,vprll,s)
+            df = ndarray shape (vperp,vprll)
+            ... REMAINING ARGUMENTS PASSED TO _bounce_average_njit_kernel ...
+        """
+        result_re = np.empty((omega_re_vec.size, omega_im_vec.size),
+                             dtype=np.float64)
+        result_im = np.empty((omega_re_vec.size, omega_im_vec.size),
+                             dtype=np.float64)
+
+        for ii in numba.prange(omega_re_vec.size):
+            for jj in numba.prange(omega_im_vec.size):
+                omv = omega_re_vec[ii] + 1j*omega_im_vec[jj]
+
+                # bounce-average integrand, shape (vperp,vprll,s)
+                x_grid = (omv - om_bkg) / (omv - om_drift) * minus_J0sq_Teff
+
+                # perform bounce integral with njitted loop
+                x_BA_re = _bounce_average_njit_kernel(
+                        x_grid         = x_grid.real,  # Re(x) taken here
+                        Bsamp_grid     = Bsamp_grid,
+                        s_grid         = s_grid,
+                        E_grid         = E_grid,
+                        mu_grid        = mu_grid,
+                        vperp_vec      = vperp_vec,
+                        vprll_vec      = vprll_vec,
+                        mass           = mass,
+                        dB_ds2_origin  = dB_ds2_origin,
+                        tbounce4th     = tbounce4th,
+                        tbounce4th_max = tbounce4th_max,
+                        norm           = True
+                )
+                # perform bounce integral with njitted loop
+                x_BA_im = _bounce_average_njit_kernel(
+                        x_grid         = x_grid.imag,  # Im(x) taken here
+                        Bsamp_grid     = Bsamp_grid,
+                        s_grid         = s_grid,
+                        E_grid         = E_grid,
+                        mu_grid        = mu_grid,
+                        vperp_vec      = vperp_vec,
+                        vprll_vec      = vprll_vec,
+                        mass           = mass,
+                        dB_ds2_origin  = dB_ds2_origin,
+                        tbounce4th     = tbounce4th,
+                        tbounce4th_max = tbounce4th_max,
+                        norm           = True
+                )
+
+                # MANUALLY INLINE velocity-space moment integral with explicit
+                # loop, numba doesn't support axis=-1 arg to np.trapz(...)
+                mom_reduced = np.empty((vperp_vec.size,), dtype=np.float64)
+
+                #for nn in numba.prange(vperp_vec.size):
+                for nn in range(vperp_vec.size):  # using prange or not doesn't matter much
+                    mom_reduced[nn] = np.trapz(x_BA_re[nn,:] * df[nn,:], vprll_vec)
+                result_re[ii,jj] = np.trapz(mom_reduced * 2*np.pi*vperp_vec, vperp_vec)
+
+                #for nn in numba.prange(vperp_vec.size):
+                for nn in range(vperp_vec.size):  # using prange or not doesn't matter much
+                    mom_reduced[nn] = np.trapz(x_BA_im[nn,:] * df[nn,:], vprll_vec)
+                result_im[ii,jj] = np.trapz(mom_reduced * 2*np.pi*vperp_vec, vperp_vec)
+
+        return result_re, result_im
