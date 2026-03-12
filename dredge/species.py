@@ -203,9 +203,50 @@ class KineticVDFGrid(Species):
         self.Tperp = self.mass * self.moment( 0.5*(self.vperp_vec**2)[:,np.newaxis] )
         self.Tprll = self.mass * self.moment(     (self.vprll_vec**2)[np.newaxis,:] )
 
-    def moment(self, x):
+    def moment(self, *args, **kwargs):
+        return self.moment_bcast_left(*args, **kwargs)
+
+    def moment_bcast_left(self, x):
+        """
+        Compute a velocity-space moment, broadcasting over LEADING axes
+        This is "hot" code, called many times in loop, so must be fast.
+
+        Input:
+            x = scalar, or numpy array with valid shape (ndim >=2) of:
+                    (..., vperp_vec.size, 1)
+                    (..., 1, vprll_vec.size)
+                    (..., *df.shape)
+                with zero, one, two, or any number of trailing axes
+                notice that 1D arrays do not work; it's unclear whether such
+                arrays should broadcast over vperp or vprll
+        """
+        if np.ndim(x) == 0:
+            x = x * np.ones_like(self.df)
+        assert x.ndim >= self.df.ndim  # prevent ambiguous 1D broadcast
+        #if x.ndim == 2:
+        #    mom_reduced = np.trapz(x * self.df, self.vprll_vec, axis=-1)
+        #    mom = np.trapz(mom_reduced * 2*np.pi*self.vperp_vec, self.vperp_vec)
+        #else:
+        #    target_shape = [1] * x.ndim
+        #    target_shape[-2] = self.df.shape[0]  # vperp axis
+        #    target_shape[-1] = self.df.shape[1]  # vprll axis
+        #    df_wide = np.reshape(self.df, tuple(target_shape))
+        #    target_shape = [1] * (x.ndim - 1)
+        #    target_shape[-1] = self.df.shape[0]  # vperp axis
+        #    vperp_wide = np.reshape(self.vperp_vec, tuple(target_shape))
+        #    mom_reduced = np.trapz(x * df_wide, self.vprll_vec, axis=-1)
+        #    mom = np.trapz(mom_reduced * 2*np.pi*vperp_wide, self.vperp_vec, axis=-1)
+        # Take advantage of numpy's default broadcasting semantics,
+        # https://numpy.org/devdocs/user/basics.broadcasting.html#general-broadcasting-rules
+        mom_reduced = np.trapz(x * self.df, self.vprll_vec, axis=-1)
+        mom = np.trapz(mom_reduced * 2*np.pi*self.vperp_vec, self.vperp_vec, axis=-1)
+        return mom
+
+    def moment_bcast_right(self, x):
         """
         Compute a velocity-space moment, broadcasting over TRAILING axes
+        This is "hot" code, called many times in loop, so must be fast.
+
         Input:
             x = scalar, or numpy array with valid shape (ndim >=2) of:
                     (vperp_vec.size, 1, ...)

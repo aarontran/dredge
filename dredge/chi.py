@@ -1230,14 +1230,14 @@ class BounceAvgESPerp(object):
 
         # Construct arc-length "s" grid for every point in velocity space,
         # staggering positions to make numerical integral more accurate.
-        ssamp = np.empty((NS_RESOLUTION, sp.vperp_vec.size, sp.vprll_vec.size),
+        ssamp = np.empty((sp.vperp_vec.size, sp.vprll_vec.size, NS_RESOLUTION),
                           dtype=np.float64)
         for ii in range(sp.vperp_vec.size):
             for jj in range(sp.vprll_vec.size):
                 ssamp_loc = np.linspace(fld.s[0], sturn[ii,jj],
                                          NS_RESOLUTION+1)
                 ssamp_loc = ssamp_loc[:-1] + 0.5*np.diff(ssamp_loc)  # offset to get cell centers
-                ssamp[:,ii,jj] = ssamp_loc
+                ssamp[ii,jj,:] = ssamp_loc
 
         self.E = E  # (vperp,vprll) grid
         self.mu = mu  # (vperp,vprll) grid
@@ -1245,32 +1245,37 @@ class BounceAvgESPerp(object):
         self.passing = passing  # (vperp,vprll) grid  # useful for viz, not needed For integral
         self.Bturn = Bturn  # (vperp,vprll) grid  # useful for viz, not needed For integral
         self.sturn = sturn  # (vperp,vprll) grid
-        self.ssamp = ssamp  # (NS_RESOLUTION,vperp,vprll) grid
+        self.ssamp = ssamp  # (vperp,vprll,NS_RESOLUTION) grid
 
         # philosophy, only compute stuff that uses vgrid and Bgeometry info,
         # and keep everything in CGS units for now; let user/caller handle the
         # k gridding and non-dimensionalization
 
         # LOCAL magnetic field structure at varying "s"
-        self.Bmag     = fld.query_Bmag_at    (self.ssamp)  # shape (  NS_RESOLUTION,vperp,vprll)
-        self.Bvec     = fld.query_B_at       (self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
-        self.gradB    = fld.query_gradBmag_at(self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
-        self.dbhat_ds = fld.query_dbhat_ds_at(self.ssamp)  # shape (3,NS_RESOLUTION,vperp,vprll)
-        self.bhat = self.Bvec / self.Bmag[np.newaxis,...]  # shape (3,NS_RESOLUTION,vperp,vprll)
+        self.Bmag     = fld.query_Bmag_at    (self.ssamp)  # shape (  vperp,vprll,NS_RESOLUTION)
+        self.Bvec     = fld.query_B_at       (self.ssamp)  # shape (3,vperp,vprll,NS_RESOLUTION)
+        self.gradB    = fld.query_gradBmag_at(self.ssamp)  # shape (3,vperp,vprll,NS_RESOLUTION)
+        self.dbhat_ds = fld.query_dbhat_ds_at(self.ssamp)  # shape (3,vperp,vprll,NS_RESOLUTION)
+        self.bhat = self.Bvec / self.Bmag[np.newaxis,...]  # shape (3,vperp,vprll,NS_RESOLUTION)
+
+        # ratio B(s)/B(s=0) along field line; shape (vperp,vprll,NS_RESOLUTION)
+        # useful for factors of Omega_c(s)/Omega_c(s=0) and k(s)/k(s=0)
+        # B(s=0) should be the same for all points in velocity space
+        self.B_B0 = self.Bmag / (self.Bmag[:,:,0])[:,:,np.newaxis]
 
         # LOCAL signed cyclotron frequency at varying "s"
-        # shape (NS_RESOLUTION,vperp,vprll)
+        # shape (vperp,vprll,NS_RESOLUTION)
         self.Omcs_loc = sp.Omcs(self.Bmag)
 
         # LOCAL velocities at varying "s";
-        # shape (NS_RESOLUTION,vperp,vprll)
-        self.vperp_loc = np.sqrt(self.Bmag/self.Bmag[0,:,:]) * vperp[np.newaxis,:,:]
-        self.vprll_loc = np.sqrt(  vprll[np.newaxis,:,:]**2
-                                 + vperp[np.newaxis,:,:]**2 * (1. - self.Bmag/self.Bmag[0,:,:]) )
-        self.vprll_loc *= np.sign( vprll[np.newaxis,:,:] )
+        # shape (vperp,vprll,NS_RESOLUTION)
+        self.vperp_loc = np.sqrt(self.B_B0) * vperp[:,:,np.newaxis]
+        self.vprll_loc = np.sqrt(  vprll[:,:,np.newaxis]**2
+                                 + vperp[:,:,np.newaxis]**2 * (1. - self.B_B0) )
+        self.vprll_loc *= np.sign( vprll[:,:,np.newaxis] )
         # equivalent rewritings
-        # self.vperp_loc = (2 * mu[np.newaxis,:,:] * self.Bmag / sp.m)**0.5
-        # self.vprll_loc = (2/sp.m * (E[np.newaxis,:,:] - mu[np.newaxis,:,:] * self.Bmag))**0.5
+        # self.vperp_loc = (2 * mu[:,:,np.newaxis] * self.Bmag / sp.m)**0.5
+        # self.vprll_loc = (2/sp.m * (E[:,:,np.newaxis] - mu[:,:,np.newaxis] * self.Bmag))**0.5
 
         # TODO Rahul mentioned something about using E,mu coordinates because then
         # one velocity-space coordinate factors out of vdrift expressions, when
@@ -1278,7 +1283,7 @@ class BounceAvgESPerp(object):
         # this code --ATr,2025nov11+13
 
         # LOCAL guiding-center drift velocities at varying s;
-        # shape (3,NS_RESOLUTION,vperp,vprll)
+        # shape (3,vperp,vprll,NS_RESOLUTION)
         self.v_gradB = (
                 0.5 * (self.vperp_loc**2 / self.Omcs_loc / self.Bmag)[np.newaxis,...]
                 * np.cross(self.bhat, self.gradB, axisa=0,axisb=0,axisc=0)
@@ -1303,27 +1308,29 @@ class BounceAvgESPerp(object):
         which is equivalent to one-half for passing particles.
 
         Input:
-            x = shape (s, vperp, vprll)
+            x = shape (vperp, vprll, s)
         Return:
             shape (vperp, vprll)
         """
+        try:
+            _ = self.ssamp
+        except:
+            raise Exception("ERROR: need to call prepare_bounce_average(...)")
+
         sp, fld = (self.species, self.field)
-        assert x.shape[0] == self.ssamp.shape[0]
+        assert x.shape[-1] == self.ssamp.shape[-1]
         assert len(x.shape) == 3
 
         # FOLLOWING CALCULATIONS ARE ALL DIMENSIONFUL
         # TODO convert to dimensionless -ATr,2025nov03
 
-        try:
-            E = self.E[np.newaxis,...]  # should be shallow copy
-            mu = self.mu[np.newaxis,...]
-            ssamp = self.ssamp  # (NS_RESOLUTION,vperp,vprll) grid
-            Bsamp = self.Bmag   # (NS_RESOLUTION,vperp,vprll) grid
-        except:
-            print("ERROR: need to call prepare_bounce_average(...)")
-            raise
+        # inherit datatype from integrand...
+        result = np.empty(sp.df.shape, dtype=x.dtype)
 
-        result = np.empty_like(E)
+        E = self.E[...,np.newaxis]  # should be shallow copy
+        mu = self.mu[...,np.newaxis]  # for easier broadcasting
+        ssamp = self.ssamp  # (vperp,vprll,NS_RESOLUTION) grid
+        Bsamp = self.Bmag   # (vperp,vprll,NS_RESOLUTION) grid
 
         # NOTE: the limit vprll -> 0 requires some care to handle singularity
         # Got it with help from ChatGPT, for the case of B''(s=0) nonzero...
@@ -1338,7 +1345,7 @@ class BounceAvgESPerp(object):
 
             # assume all grids are (s, vperp, vprll)
             integrand = x / ( 2*(E - mu*Bsamp)/sp.mass )**0.5
-            result = np.trapz(integrand, ssamp, axis=0)
+            result[:] = np.trapz(integrand, ssamp, axis=-1)
 
             # limiting form of bounce-average integral near the singularity,
             # valid for the case x=1, but TODO MAY NOT BE CORRECT FOR x(s)
@@ -1346,25 +1353,26 @@ class BounceAvgESPerp(object):
             # MIGHT NEED HIGHER ORDER EDGE STENCILS FOR THIS.
             dB_ds2 = np.gradient(np.gradient(fld.Bmag, fld.s, edge_order=2),
                                  fld.s, edge_order=2)
-            if x.shape[2] == self.ssamp.shape[2]:  # computed x on full v_parallel grid
+            dB_ds2_origin = dB_ds2[0]
+            if x.shape[1] == self.ssamp.shape[1]:  # computed x on full v_parallel grid
                 result[:, pitch90] = (
-                    (x[0])[:,pitch90]  # cannot use [0,:,pitch90] b/c mixing selector functions
-                    * np.pi/2 * (sp.mass / dB_ds2[0])**0.5 / (self.mu[:,pitch90])**0.5
+                    (x[...,0])[:,pitch90]  # cannot use [:,pitch90,0] b/c mixing selector functions
+                    * np.pi/2 * (sp.mass / dB_ds2_origin)**0.5 / (self.mu[:,pitch90])**0.5
                 )
-            elif x.shape[2] == 1:  # x is independent of v_parallel, we broadcast along coordinate
+            elif x.shape[1] == 1:  # x is independent of v_parallel, we broadcast along coordinate
                 assert np.where(pitch90)[0].size == 1
                 jj = np.where(pitch90)[0][0]  # index explicitly to make code nicer
                 # TODO handle ugly divide by zero warning -ATr,2025nov06
                 result[:, jj] = (
-                    x[0,:,0]
-                    * np.pi/2 * (sp.mass / dB_ds2[0])**0.5 / (self.mu[:,jj])**0.5
+                    x[:,0,0]
+                    * np.pi/2 * (sp.mass / dB_ds2_origin)**0.5 / (self.mu[:,jj])**0.5
                 )
             else:
                 raise Exception('got bad x shape {}'.format(x.shape))
         else:
             # assume all grids are (s, vperp, vprll)
             integrand = x / ( 2*(E - mu*Bsamp)/sp.mass )**0.5
-            result = np.trapz(integrand, ssamp, axis=0)
+            result[:] = np.trapz(integrand, ssamp, axis=-1)
 
         if norm:
             result /= self.tbounce4th
@@ -1381,13 +1389,13 @@ class BounceAvgESPerp(object):
 
             # handle broadcasting cases
             # TODO ugly ugly ugly -ATr,2025nov06
-            if x.shape[1] == self.ssamp.shape[1] and x.shape[2] == self.ssamp.shape[2]:
-                x_singular = x[0,ii,jj]
-            elif x.shape[1] == 1                 and x.shape[2] == self.ssamp.shape[2]:
-                x_singular = x[0,0,jj]
-            elif x.shape[1] == self.ssamp.shape[1] and x.shape[2] == 1:
-                x_singular = x[0,ii,0]
-            elif x.shape[1] == 1                   and x.shape[2] == 1:
+            if x.shape[0] == self.ssamp.shape[0] and x.shape[1] == self.ssamp.shape[1]:
+                x_singular = x[ii,jj,0]
+            elif x.shape[0] == 1                 and x.shape[1] == self.ssamp.shape[1]:
+                x_singular = x[0,jj,0]
+            elif x.shape[0] == self.ssamp.shape[0] and x.shape[1] == 1:
+                x_singular = x[ii,0,0]
+            elif x.shape[0] == 1                   and x.shape[1] == 1:
                 x_singular = x[0,0,0]
             else:
                 raise Exception('got bad x shape {}'.format(x.shape))
@@ -1427,11 +1435,11 @@ class BounceAvgESPerp(object):
                     # expect it may only be used during debugging
 
                     xmax_neighbor = np.amax([  # don't use nanmax b/c if you get nan, something is wrong
-                            x[0,ii,  jj-1],  # left in vprll axis
-                            x[0,ii,  jj+1],  # right in vprll axis
-                            x[0,ii+1,jj  ],  # up in vperp axis
-                            x[0,ii+1,jj-1],  # diagonal up left
-                            x[0,ii+1,jj+1],  # diagonal up right
+                            x[ii,  jj-1,0],  # left in vprll axis
+                            x[ii,  jj+1,0],  # right in vprll axis
+                            x[ii+1,jj  ,0],  # up in vperp axis
+                            x[ii+1,jj-1,0],  # diagonal up left
+                            x[ii+1,jj+1,0],  # diagonal up right
                     ])
                     rmax_neighbor = np.amax([  # don't use nanmax b/c if you get nan, something is wrong
                             result[ii,  jj-1],  # left in vprll axis
@@ -1476,15 +1484,12 @@ class BounceAvgESPerp(object):
         # ------------------------------------------
         # start preparing pieces of velocity-space integral
 
-        # Convention: make array shapes like (vperp, vprll, k, Re(om), Im(om))
+        # Convention: make array shapes like (k, Re(om), Im(om); vperp, vprll)
         # Integrate over (vperp, vprll) in order to evaluate susceptibility,
         # leaving only a 3D array.
         # Be strategic about what arrays to broadcast.
-
-        # EXTEND to (vperp, vprll; k, Re(omega), Im(omega)) grid
-        # for broadcasting integral
-        kk5d = kk[np.newaxis, np.newaxis, ...]  # scaled to species rho_Ls
-        oo5d = oo[np.newaxis, np.newaxis, ...]  # scaled to species Omega_cs
+        kk5d = kk[..., np.newaxis, np.newaxis]  # scaled to species rho_Ls
+        oo5d = oo[..., np.newaxis, np.newaxis]  # scaled to species Omega_cs
         assert kk5d.ndim == 5
         assert oo5d.ndim == 5
 
@@ -1499,29 +1504,23 @@ class BounceAvgESPerp(object):
         #                                 + dF0/dvperp * 1/(m * vperp)
         #       (dF0/dE + 1/B * dF0/dµ) =   dF0/dvperp * 1/(m * vperp)
 
-        # ratio B(s)/B(s=0) along field line; shape (NS_RESOLUTION,vperp,vprll)
-        # useful for factors of Omega_c(s)/Omega_c(s=0) and k(s)/k(s=0)
-        # note that B(s=0) should be the same for all points in velocity space,
-        # but the s sampling for each point in velocity space may differ
-        B_B0 = self.Bmag / self.Bmag[0,:,:]
-
-        # Distribution function gradients, shape (s,vperp,vprll), expressed in
+        # Distribution function gradients, shape (vperp,vprll,s), expressed in
         # dimensionless energy coordinates.
         # Remember sp.df has no concept of (E,µ) coordinates, B field, etc.
         # Coordinates and B field are introduced in susceptibility class.
         dF0_dEprll = sp.compute_dF0_dEprll() * (0.5 * sp.m * sp.vth_perp**2)
         dF0_dEperp = sp.compute_dF0_dEperp() * (0.5 * sp.m * sp.vth_perp**2)
-        dF0_dEprll = dF0_dEprll[np.newaxis,:,:]
-        dF0_dEperp = dF0_dEperp[np.newaxis,:,:]
+        dF0_dEprll = dF0_dEprll[:,:,np.newaxis]
+        dF0_dEperp = dF0_dEperp[:,:,np.newaxis]
         # derived gradients (using chain rule)
         dF0_dmu_B0 = -dF0_dEprll + dF0_dEperp
-        dF0_dmu_B  =  dF0_dmu_B0 / B_B0  # this varies along field line!
+        dF0_dmu_B  =  dF0_dmu_B0 / self.B_B0  # this varies along field line!
         dF0_dE     =  dF0_dEprll  # alias, dF0/dE |_µ = dF0/d(Eprll) |_{Eperp}
 
-        # inverse temperature, shape (s,vperp,vprll), normalized to Tperp so
+        # inverse temperature, shape (vperp,vprll,s), normalized to Tperp so
         # that Teff = +1 for a bi-Maxwellian
         #inv_Teff = -1 * sp.compute_dF0_dEperp() / sp.df
-        inv_Teff = -1 * (dF0_dE + dF0_dmu_B) / sp.df[np.newaxis,:,:]
+        inv_Teff = -1 * (dF0_dE + dF0_dmu_B) / sp.df[:,:,np.newaxis]
 
         # regions of low phase space density may have dF0/d(vperp) = 0
         # and Teff->infty; enforce ceiling to avoid dividing by zero
@@ -1541,7 +1540,7 @@ class BounceAvgESPerp(object):
         assert np.all(Teff != 0.)  # 1/0 kills later calculations
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # compute velocities on (s,vperp,vprll) grid
+        # compute velocities on (vperp,vprll,s) grid
 
         # DIAMAGNETIC DRIFT VELOCITY (dimensionless)
         # Assume epsN ~ sqrt(B) along the field line from flux freezing
@@ -1551,11 +1550,11 @@ class BounceAvgESPerp(object):
         # because of boltzmann factor when G is present, see my paper and LaTeX
         # notes.  This can be traced to choice of coordinates (exact vs.
         # inexact constants of motion) used when deriving GK equations.
-        v_star = 0.5 * (-epsN) * Teff / np.sqrt(B_B0)
+        v_star = 0.5 * (-epsN) * Teff / np.sqrt(self.B_B0)
 
         # GRAVITY DRIFT VELOCITY (dimensionless)
         # v_grav/v_th = Gforce / v_th,perp / Omci(0) * Omci(0)/Omci(s)
-        v_grav = G / B_B0
+        v_grav = G / self.B_B0
 
         # BACKGROUND F0 VELOCITY (dimensionless)
         # encodes all the boltzmann response drifts...
@@ -1566,12 +1565,12 @@ class BounceAvgESPerp(object):
         # external gravitational force drift
         v_drift += v_grav
         # grad(B) drift
-        # Pre-cached drift velocity array shape = (3,NS_RESOLUTION,vperp,vprll)
+        # Pre-cached drift velocity array shape = (3,vperp,vprll,NS_RESOLUTION)
         # in my axisymmetric slab approx, only use x (poloidal) component
         # need charge sign factor to work with k normalization
         v_drift += (self.v_gradB[0,...]/sp.vth_perp) * np.sign(sp.Omcs(self.B0))
         # curvature drift
-        # Pre-cached drift velocity array shape = (3,NS_RESOLUTION,vperp,vprll)
+        # Pre-cached drift velocity array shape = (3,vperp,vprll,NS_RESOLUTION)
         # in my axisymmetric slab approx, only use x (poloidal) component
         # need charge sign factor to work with k normalization
         v_drift += (self.v_curv [0,...]/sp.vth_perp) * np.sign(sp.Omcs(self.B0))
@@ -1583,14 +1582,14 @@ class BounceAvgESPerp(object):
 
         # wavevector, flux-surface-normal unit vectors
         # to help construct "Boltzmann B-field drift freq"
-        # shape (3,NS_RESOLUTION,vperp,vprll)
+        # shape (3,vperp,vprll,NS_RESOLUTION)
         khat = np.zeros_like(self.bhat)
         khat[0] = 1.  # poloidal direction along x in cartesian grid
         psihat = np.cross(self.bhat, khat, axisa=0,axisb=0,axisc=0)
 
         # construct "anisotropy temperature" which measures
         # pitch-angle dependent structure
-        Upsilon = -1 * sp.df[np.newaxis,:,:] / dF0_dmu_B
+        Upsilon = -1 * sp.df[:,:,np.newaxis] / dF0_dmu_B
         # we need ceiling here....
         if Teff_ceiling is not None:
             _Tmax = Teff_ceiling / (0.5 * sp.m * sp.vth_perp**2)  # make dimensionless
@@ -1663,7 +1662,7 @@ class BounceAvgESPerp(object):
 
             # Make the J_0^2(...) grid
             vperp_vth = sp.vperp_vec / sp.vth_perp
-            Jarg = kk5d * vperp_vth[:,np.newaxis,np.newaxis,np.newaxis,np.newaxis]
+            Jarg = kk5d * vperp_vth[np.newaxis,np.newaxis,np.newaxis,:,np.newaxis]
             J0 = scipy.special.jv(0, Jarg)
             J1_J0 = scipy.special.jv(1, Jarg) / J0
             J2_J0 = scipy.special.jv(2, Jarg) / J0
@@ -1677,10 +1676,10 @@ class BounceAvgESPerp(object):
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
             # Boltzmann response f_{1B} independent of ω, so no loop needed
 
-            # bounce-average reduces (s,vperp,vprll) -> (vperp,vprll)
-            # then extend (vperp,vprll) -> (vperp,vprll,k,Re(ω),Im(ω))
+            # bounce-average reduces (vperp,vprll) -> (vperp,vprll,s)
+            # then extend (vperp,vprll) -> (k,Re(ω),Im(ω),vperp,vprll)
             inv_Teff_BA = self.bounce_average( inv_Teff )
-            inv_Teff_BA = inv_Teff_BA[:,:,np.newaxis,np.newaxis,np.newaxis]
+            inv_Teff_BA = inv_Teff_BA[np.newaxis,np.newaxis,np.newaxis,:,:]
 
             mom += sp.moment( inv_Teff_BA )
 
@@ -1704,37 +1703,40 @@ class BounceAvgESPerp(object):
             # no cast: {7.9, 7.37, 7.15, 9.32} sec
             inv_Teff = inv_Teff.astype(np.complex128)
 
+            # avoid complex->real casting
+            self.ssamp = self.ssamp.astype(np.complex128)
+
             started = datetime.now()
 
             for ii in range(self.k_vec.size):
                 kv  = self.k_vec[ii]  # k_\perp at midplane z=0, suffix 'v' for value
 
-                # shape (s,vperp,vprll)
+                # shape (vperp,vprll,s)
                 # sqrt(B/B0) allows k_perp to vary along field line
                 # In omega_Upsilon, need sign(q) for ALL bare J_1 functions b/c
                 # k_perp norm uses abs(Omega_cs).
                 # Omit for J0, J2, Jarg*J1 (even functions of k_perp).
-                om_bkg[:]   = v_bkg   * kv * np.sqrt(B_B0)
-                om_drift[:] = v_drift * kv * np.sqrt(B_B0)
+                om_bkg[:]   = v_bkg   * kv * np.sqrt(self.B_B0)
+                om_drift[:] = v_drift * kv * np.sqrt(self.B_B0)
 
-                om_ups1[:] =         J1_J0[:,:,ii,0,0] * om_ups1_kernel * np.sign(sp.q)
+                om_ups1[:] =         J1_J0[ii,0,0,:,:,np.newaxis] * om_ups1_kernel * np.sign(sp.q)
                 # Use Taylor expansion of J_1(..) because J_1 / v_\perp
                 # -> 0/0 is indefinite
                 om_ups1[self.vperp_loc==0] = (
-                        (kk5d / J0)[:,:,ii,0,0] * Lam_Ups * self.vprll_loc**2
+                        (kk5d / J0)[ii,0,0,:,:,np.newaxis] * Lam_Ups * self.vprll_loc**2
                         * np.sum(psihat * self.dbhat_ds, axis=0)
                         / sp.vth_perp / abs(sp.Omcs(self.B0))  # "standard" normalization
                         * np.sign(sp.q)  # re-attach the charge sign
-                        / np.sqrt(B_B0)  # because "plain" k_perp/Omega0 appears without
+                        / np.sqrt(self.B_B0)  # because "plain" k_perp/Omega0 appears without
                                          # v_perp factor, it's no longer bounce invariant,
                                          # we need to reattach B(s)/B0 factor
                         # This assignment must follow (cannot precede)
                         # the om_ups1[:] = ... statement
                 )[self.vperp_loc==0]  # notice duplicate selector needed here
-                om_ups2[:] =            J1_J0 [:,:,ii,0,0] * om_ups2_kernel * np.sign(sp.q)
-                om_ups3[:] = (      4 * J2_J0 [:,:,ii,0,0] * om_ups3_kernel
-                              + (Jarg * J1_J0)[:,:,ii,0,0] * om_ups3_kernel )
-                om_ups4[:] =    (Jarg * J1_J0)[:,:,ii,0,0] * om_ups4_kernel
+                om_ups2[:] =            J1_J0 [ii,0,0,:,:,np.newaxis] * om_ups2_kernel * np.sign(sp.q)
+                om_ups3[:] = (      4 * J2_J0 [ii,0,0,:,:,np.newaxis] * om_ups3_kernel
+                              + (Jarg * J1_J0)[ii,0,0,:,:,np.newaxis] * om_ups3_kernel )
+                om_ups4[:] =    (Jarg * J1_J0)[ii,0,0,:,:,np.newaxis] * om_ups4_kernel
 
                 om_ups [:] = om_ups1 + om_ups2 + om_ups3 + om_ups4
 
@@ -1752,7 +1754,7 @@ class BounceAvgESPerp(object):
                             )
                         # gyrotropic h term's contribution to susceptibility
                         mom[ii,jj,mm] += sp.moment(
-                            -1 * J0sq[:,:,ii,0,0] * result_BA
+                            -1 * J0sq[ii,0,0,:,:] * result_BA
                         )
                     print('done omega_re ', jj, 'of', self.omega_re_vec.size, 'elapsed', datetime.now()-started)
                 print('done k ', ii, 'of', self.k_vec.size, 'elapsed', datetime.now()-started)
@@ -1768,17 +1770,17 @@ class BounceAvgESPerp(object):
 
             # Make the J_0^2(...) grid
             vperp_vth = sp.vperp_vec / sp.vth_perp
-            Jarg = kk5d * vperp_vth[:,np.newaxis,np.newaxis,np.newaxis,np.newaxis]
+            Jarg = kk5d * vperp_vth[np.newaxis,np.newaxis,np.newaxis,:,np.newaxis]
             J0 = scipy.special.jv(0, Jarg)
             J1_J0 = scipy.special.jv(1, Jarg) / J0
             J2_J0 = scipy.special.jv(2, Jarg) / J0
             J0sq = J0**2
             del vperp_vth
 
-            # bounce-average reduces (s,vperp,vprll) -> (vperp,vprll)
-            # then extend (vperp,vprll) -> (vperp,vprll,k,Re(ω),Im(ω))
+            # bounce-average reduces (vperp,vprll) -> (vperp,vprll,s)
+            # then extend (vperp,vprll) -> (k,Re(ω),Im(ω),vperp,vprll)
             inv_Teff_BA = self.bounce_average( inv_Teff )
-            inv_Teff_BA = inv_Teff_BA[:,:,np.newaxis,np.newaxis,np.newaxis]
+            inv_Teff_BA = inv_Teff_BA[np.newaxis,np.newaxis,np.newaxis,:,:]
 
             # bounce-average integrand needs 1/Teff(s) factor
             # when background F0 is non-Maxwellian
@@ -1788,16 +1790,16 @@ class BounceAvgESPerp(object):
             # TODO DOUBLE CHECK CAREFULLY, NEED FEEDBACK ON THIS --ATr,2025nov13
 
             ωD_Teff_BA = kk5d * (
-                    self.bounce_average( v_drift * inv_Teff * np.sqrt(B_B0) )
-                    [:,:,np.newaxis,np.newaxis,np.newaxis]
+                    self.bounce_average( v_drift * inv_Teff * np.sqrt(self.B_B0) )
+                    [np.newaxis,np.newaxis,np.newaxis,:,:]
             )
             ωbkg_Teff_BA = kk5d * (
-                    self.bounce_average( v_bkg * inv_Teff * np.sqrt(B_B0) )
-                    [:,:,np.newaxis,np.newaxis,np.newaxis]
+                    self.bounce_average( v_bkg * inv_Teff * np.sqrt(self.B_B0) )
+                    [np.newaxis,np.newaxis,np.newaxis,:,:]
             )
             ωDωbkg_Teff_BA = kk5d**2 * (
-                    self.bounce_average( v_drift * v_bkg * inv_Teff * B_B0 )
-                    [:,:,np.newaxis,np.newaxis,np.newaxis]
+                    self.bounce_average( v_drift * v_bkg * inv_Teff * self.B_B0 )
+                    [np.newaxis,np.newaxis,np.newaxis,:,:]
             )
 
             # Construct Upsilon drift bounce average terms,
