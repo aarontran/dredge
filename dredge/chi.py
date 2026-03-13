@@ -1347,35 +1347,65 @@ class BounceAvgESPerp(object):
         # retrace the singularity-handling procedure...
         # WARNING it still breaks at vperp_vec -> 0
         # --ATr,2025nov06
-        pitch90 = (sp.vprll_vec == 0)
-        if np.any(pitch90):
-            # TODO cleanup the warnings by handling casewise
-            # --ATr,2025nov06
 
-            # assume all grids are (s, vperp, vprll)
-            integrand = x / ( 2*(E - mu*Bsamp)/sp.mass )**0.5
-            result[:] = np.trapezoid(integrand, ssamp, axis=-1)
+        pitch90 = (sp.vprll_vec == 0)
+        muzero = (sp.vperp_vec == 0)
+
+        if np.any(pitch90):
+            assert np.where(pitch90)[0].size == 1
+            jj = np.where(pitch90)[0][0]
+
+            # assume all grids are (vperp, vprll, s)
+            #integrand = x / ( 2*(E - mu*Bsamp)/sp.mass )**0.5
+            #result[:] = np.trapezoid(integrand, ssamp, axis=-1)
+
+            # enforce sqrt argument >=0
+            Eprll = np.maximum(E - mu*Bsamp, 0.)
+            denom = ( 2*Eprll/sp.mass )**0.5
 
             # limiting form of bounce-average integral near the singularity,
             # valid for the case x=1, but TODO MAY NOT BE CORRECT FOR x(s)
             # spatially varying........ --ATr,2025nov06
             if x.shape[1] == self.ssamp.shape[1]:  # computed x on full v_parallel grid
-                result[:, pitch90] = (
-                    (x[...,0])[:,pitch90]  # cannot use [:,pitch90,0] b/c mixing selector functions
-                    * np.pi/2 * (sp.mass / self.dB_ds2_origin)**0.5 / (self.mu[:,pitch90])**0.5
-                )
-            elif x.shape[1] == 1:  # x is independent of v_parallel, we broadcast along coordinate
-                assert np.where(pitch90)[0].size == 1
-                jj = np.where(pitch90)[0][0]  # index explicitly to make code nicer
-                # TODO handle ugly divide by zero warning -ATr,2025nov06
-                result[:, jj] = (
-                    x[:,0,0]
-                    * np.pi/2 * (sp.mass / self.dB_ds2_origin)**0.5 / (self.mu[:,jj])**0.5
-                )
+
+                # handle points "left" of singularity
+                if jj > 0:
+                    _integrand = x[:,:jj] / denom[:,:jj]
+                    result[:,:jj] = np.trapezoid(_integrand, ssamp[:,:jj], axis=-1)
+
+                # handle singularity v_parallel = 0
+                if np.any(muzero):
+                    assert np.where(muzero)[0].size == 1
+                    ii = np.where(muzero)[0][0]
+
+                    result[ii,jj] = np.inf  # to be overriden
+
+                    result[~muzero,jj] = (
+                        # cannot use [~muzero,jj,0] b/c mixing selector functions
+                        (x[...,0])[~muzero,jj]
+                        * np.pi/2 * (sp.mass / self.dB_ds2_origin)**0.5
+                        / (self.mu[~muzero,jj])**0.5
+                    )
+
+                # handle points "right" of singularity
+                if jj < (sp.vprll_vec.size - 1):
+                    _integrand = x[:,(jj+1):] / denom[:,(jj+1):]
+                    result[:,(jj+1):] = np.trapezoid(_integrand, ssamp[:,(jj+1):], axis=-1)
+
+            # UNUSED code branch will soon be deprecated/eliminated
+            # --ATr,2026mar12
+
+            #elif x.shape[1] == 1:  # x is independent of v_parallel, we broadcast along coordinate
+            #    # TODO handle ugly divide by zero warning -ATr,2025nov06
+            #    result[:,jj] = (
+            #        x[:,0,0]
+            #        * np.pi/2 * (sp.mass / self.dB_ds2_origin)**0.5 / (self.mu[:,jj])**0.5
+            #    )
+
             else:
                 raise Exception('got bad x shape {}'.format(x.shape))
         else:
-            # assume all grids are (s, vperp, vprll)
+            # assume all grids are (vperp, vprll, s)
             integrand = x / ( 2*(E - mu*Bsamp)/sp.mass )**0.5
             result[:] = np.trapezoid(integrand, ssamp, axis=-1)
 
@@ -1385,7 +1415,6 @@ class BounceAvgESPerp(object):
         # handle the zero point specially
         # important that this comes AFTER the "nominal" norm factor is applied
         # TODO cleanup warning messages related to this!!!!! --ATr,2025nov06
-        muzero = (sp.vperp_vec == 0)
         if np.any(pitch90) and np.any(muzero):
             assert np.where(muzero)[0].size == 1
             assert np.where(pitch90)[0].size == 1
@@ -1642,9 +1671,9 @@ class BounceAvgESPerp(object):
         _sel = self.vperp_loc != 0
         om_ups1_kernel = np.zeros_like(self.ssamp)
         om_ups1_kernel[_sel] = (
-                       2 * self.vprll_loc**2 / self.vperp_loc
-                       * np.sum(psihat * self.dbhat_ds, axis=0)
-        )[_sel]
+                       2 * self.vprll_loc[_sel]**2 / self.vperp_loc[_sel]
+                       * np.sum(psihat * self.dbhat_ds, axis=0)[_sel]
+        )
         del _sel
         om_ups2_kernel = ( 2 * self.vperp_loc / self.Bmag
                            * np.sum(psihat * self.gradB, axis=0) )
