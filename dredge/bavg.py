@@ -42,14 +42,14 @@ def _bounce_average_njit_kernel(
         for jj in numba.prange(vprll_vec.size):
             x_vec = x_grid    [ii,jj,:]  # NOTE (s,vperp,vprll) shape
             B_vec = Bsamp_grid[ii,jj,:]  # doesn't play nice with numba
-            s_vec = s_grid    [ii,jj,:]  # compilation of np.trapz
+            s_vec = s_grid    [ii,jj,:]  # compilation of np.trapezoid
             E     = E_grid    [ii,jj]    # b/c [:,ii,jj] data not contiguous in c ordering
             mu    = mu_grid   [ii,jj]
             # common case; breaks with divide-by-zero or huge number
             # for vprll=0 (pitch angle 90)
             # singular line requires separate handling for vperp=0 or vperp>0
             integrand = x_vec / np.sqrt( (2./mass)*(E - mu*B_vec) )
-            result[ii,jj] = np.trapz(integrand, s_vec)
+            result[ii,jj] = np.trapezoid(integrand, s_vec)
 
     # special case handling
     muzero = (vperp_vec == 0)

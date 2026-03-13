@@ -164,8 +164,8 @@ class KineticPerpVDFGrid(Species):
         if np.ndim(x) == 0:
             x = x * np.ones_like(self.df_reduced)
         assert x.ndim == self.df_reduced.ndim
-        return np.trapz(x * self.df_reduced * 2*np.pi*self.vperp_vec,
-                        self.vperp_vec)
+        return np.trapezoid(x * self.df_reduced * 2*np.pi*self.vperp_vec,
+                            self.vperp_vec)
 
 
 class KineticVDFGrid(Species):
@@ -198,7 +198,7 @@ class KineticVDFGrid(Species):
         self.vprll_vec = vprll_vec
         self.df = df
         self.df = self.df / self.moment(1.)
-        self.df_reduced = np.trapz(self.df, self.vprll_vec, axis=1)
+        self.df_reduced = np.trapezoid(self.df, self.vprll_vec, axis=1)
 
         self.Tperp = self.mass * self.moment( 0.5*(self.vperp_vec**2)[:,np.newaxis] )
         self.Tprll = self.mass * self.moment(     (self.vprll_vec**2)[np.newaxis,:] )
@@ -224,8 +224,8 @@ class KineticVDFGrid(Species):
             x = x * np.ones_like(self.df)
         assert x.ndim >= self.df.ndim  # prevent ambiguous 1D broadcast
         #if x.ndim == 2:
-        #    mom_reduced = np.trapz(x * self.df, self.vprll_vec, axis=-1)
-        #    mom = np.trapz(mom_reduced * 2*np.pi*self.vperp_vec, self.vperp_vec)
+        #    mom_reduced = np.trapezoid(x * self.df, self.vprll_vec, axis=-1)
+        #    mom = np.trapezoid(mom_reduced * 2*np.pi*self.vperp_vec, self.vperp_vec)
         #else:
         #    target_shape = [1] * x.ndim
         #    target_shape[-2] = self.df.shape[0]  # vperp axis
@@ -234,12 +234,12 @@ class KineticVDFGrid(Species):
         #    target_shape = [1] * (x.ndim - 1)
         #    target_shape[-1] = self.df.shape[0]  # vperp axis
         #    vperp_wide = np.reshape(self.vperp_vec, tuple(target_shape))
-        #    mom_reduced = np.trapz(x * df_wide, self.vprll_vec, axis=-1)
-        #    mom = np.trapz(mom_reduced * 2*np.pi*vperp_wide, self.vperp_vec, axis=-1)
+        #    mom_reduced = np.trapezoid(x * df_wide, self.vprll_vec, axis=-1)
+        #    mom = np.trapezoid(mom_reduced * 2*np.pi*vperp_wide, self.vperp_vec, axis=-1)
         # Take advantage of numpy's default broadcasting semantics,
         # https://numpy.org/devdocs/user/basics.broadcasting.html#general-broadcasting-rules
-        mom_reduced = np.trapz(x * self.df, self.vprll_vec, axis=-1)
-        mom = np.trapz(mom_reduced * 2*np.pi*self.vperp_vec, self.vperp_vec, axis=-1)
+        mom_reduced = np.trapezoid(x * self.df, self.vprll_vec, axis=-1)
+        mom = np.trapezoid(mom_reduced * 2*np.pi*self.vperp_vec, self.vperp_vec, axis=-1)
         return mom
 
     def moment_bcast_right(self, x):
@@ -260,8 +260,8 @@ class KineticVDFGrid(Species):
             x = x * np.ones_like(self.df)
         assert x.ndim >= self.df.ndim
         if x.ndim == 2:
-            mom_reduced = np.trapz(x * self.df, self.vprll_vec, axis=1)
-            mom = np.trapz(mom_reduced * 2*np.pi*self.vperp_vec, self.vperp_vec)
+            mom_reduced = np.trapezoid(x * self.df, self.vprll_vec, axis=1)
+            mom = np.trapezoid(mom_reduced * 2*np.pi*self.vperp_vec, self.vperp_vec)
         else:
             target_shape = [1] * x.ndim
             target_shape[0] = self.df.shape[0]  # vperp axis
@@ -272,8 +272,8 @@ class KineticVDFGrid(Species):
             target_shape[0] = self.df.shape[0]  # vperp axis
             vperp_wide = np.reshape(self.vperp_vec, tuple(target_shape))
 
-            mom_reduced = np.trapz(x * df_wide, self.vprll_vec, axis=1)
-            mom = np.trapz(mom_reduced * 2*np.pi*vperp_wide, self.vperp_vec, axis=0)
+            mom_reduced = np.trapezoid(x * df_wide, self.vprll_vec, axis=1)
+            mom = np.trapezoid(mom_reduced * 2*np.pi*vperp_wide, self.vperp_vec, axis=0)
         return mom
 
     # TODO write template methods / extensions for

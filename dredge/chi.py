@@ -317,14 +317,14 @@ class SlabESPerp(object):
             Jnsq = scipy.special.jv(n, kg*vperpg)**2
 
             # \int dF/dvperp * 1/vperp * J_n^2(z) * 2*pi*vperp dvperp
-            bessel_Jnsq_Fprime[n,:] = np.trapz(Fprimeg * Jnsq * 2*np.pi, vperpg, axis=-1)
+            bessel_Jnsq_Fprime[n,:] = np.trapezoid(Fprimeg * Jnsq * 2*np.pi, vperpg, axis=-1)
 
             # \int F * J_n^2(z) * 2*pi*vperp dvperp
-            bessel_Jnsq_F[n,:] = np.trapz(Fg * Jnsq * 2*np.pi*vperpg, vperpg, axis=-1)
+            bessel_Jnsq_F[n,:] = np.trapezoid(Fg * Jnsq * 2*np.pi*vperpg, vperpg, axis=-1)
 
             # \int dF/dvperp * vperp * J_n^2(z) * 2*pi*vperp dvperp
             if with_bsum2:
-                bessel_Jnsq_Fprime_vpsq[n,:] = np.trapz(Fprimeg*vperpg * Jnsq * 2*np.pi*vperpg, vperpg, axis=-1)
+                bessel_Jnsq_Fprime_vpsq[n,:] = np.trapezoid(Fprimeg*vperpg * Jnsq * 2*np.pi*vperpg, vperpg, axis=-1)
 
             if verbose:
                 print(f'Bessel J_{n:d} integral done, elapsed', datetime.now()-started)
@@ -1050,7 +1050,7 @@ class SlabESPerp(object):
         Fprime = np.gradient(self.Freduced, self.vperp)
         # inv_a_cubed is 1/a^3 where a \propto Larmor radius
         # for a maxwellian, 1/a^3 = -2*sqrt(pi)*(2*kB*Ts/ms)^(-3/2)
-        inv_a_cubed = np.trapz(Fprime/self.vperp * 2*np.pi, self.vperp)
+        inv_a_cubed = np.trapezoid(Fprime/self.vperp * 2*np.pi, self.vperp)
 
         # parentheses to try to be efficient/smart with the operations
         term0 = (omps_Omcs**2 * inv_a_cubed / kk**3) * (oo/np.tan(np.pi*oo))
@@ -1311,7 +1311,7 @@ class BounceAvgESPerp(object):
         )
         return
 
-    def bounce_average(self, x, norm=True):#, method='trapz'):#, EPS_FUDGE=1e-4):
+    def bounce_average(self, x, norm=True):
         """
         Average over one-fourth(!) of an orbit for trapped particles,
         which is equivalent to one-half for passing particles.
@@ -1354,7 +1354,7 @@ class BounceAvgESPerp(object):
 
             # assume all grids are (s, vperp, vprll)
             integrand = x / ( 2*(E - mu*Bsamp)/sp.mass )**0.5
-            result[:] = np.trapz(integrand, ssamp, axis=-1)
+            result[:] = np.trapezoid(integrand, ssamp, axis=-1)
 
             # limiting form of bounce-average integral near the singularity,
             # valid for the case x=1, but TODO MAY NOT BE CORRECT FOR x(s)
@@ -1377,7 +1377,7 @@ class BounceAvgESPerp(object):
         else:
             # assume all grids are (s, vperp, vprll)
             integrand = x / ( 2*(E - mu*Bsamp)/sp.mass )**0.5
-            result[:] = np.trapz(integrand, ssamp, axis=-1)
+            result[:] = np.trapezoid(integrand, ssamp, axis=-1)
 
         if norm:
             result /= self.tbounce4th
@@ -1993,17 +1993,17 @@ class BounceAvgESPerp(object):
                 )
 
                 # MANUALLY INLINE velocity-space moment integral with explicit
-                # loop, numba doesn't support axis=-1 arg to np.trapz(...)
+                # loop, numba doesn't support axis=-1 arg to np.trapezoid(...)
                 mom_reduced = np.empty((vperp_vec.size,), dtype=np.float64)
 
                 #for nn in numba.prange(vperp_vec.size):
                 for nn in range(vperp_vec.size):  # using prange or not doesn't matter much
-                    mom_reduced[nn] = np.trapz(x_BA_re[nn,:] * df[nn,:], vprll_vec)
-                result_re[ii,jj] = np.trapz(mom_reduced * 2*np.pi*vperp_vec, vperp_vec)
+                    mom_reduced[nn] = np.trapezoid(x_BA_re[nn,:] * df[nn,:], vprll_vec)
+                result_re[ii,jj] = np.trapezoid(mom_reduced * 2*np.pi*vperp_vec, vperp_vec)
 
                 #for nn in numba.prange(vperp_vec.size):
                 for nn in range(vperp_vec.size):  # using prange or not doesn't matter much
-                    mom_reduced[nn] = np.trapz(x_BA_im[nn,:] * df[nn,:], vprll_vec)
-                result_im[ii,jj] = np.trapz(mom_reduced * 2*np.pi*vperp_vec, vperp_vec)
+                    mom_reduced[nn] = np.trapezoid(x_BA_im[nn,:] * df[nn,:], vprll_vec)
+                result_im[ii,jj] = np.trapezoid(mom_reduced * 2*np.pi*vperp_vec, vperp_vec)
 
         return result_re, result_im
