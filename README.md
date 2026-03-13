@@ -32,6 +32,12 @@ Usage
 The user interface is NOT stable and continuously evolving, no guarantees of
 backwards compatibility.
 
+"dredge" can be installed as a Python package.  It is suggested to use pip's
+editable mode:
+
+    cd /path/to/dredge
+    pip install -e . --no-cache-dir
+
 See `example/dclc.ipynb` for a calculation of DCLC slab dispersion, for a
 subtracted Maxwellian plasma.
 

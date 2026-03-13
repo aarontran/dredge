@@ -28,6 +28,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Distribution / packaging
+*.egg-info/
+*.egg
+
 # Jupyter Notebook
 .ipynb_checkpoints
 
