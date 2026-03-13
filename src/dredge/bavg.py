@@ -17,6 +17,10 @@ def _bounce_average_njit_kernel(
 ):
     r"""
     Internal function to compute the bounce average, hottest logic
+
+    Strongly encouraged to only supply real (not complex) arguments.
+    I hit some issues when passing complex dtypes into x_grid
+
     Input:
         x_grid = quantity to be averaged; shape (vperp,vprll,s)
         Bsamp_grid = B field magnitude on grid (vperp,vprll,s)

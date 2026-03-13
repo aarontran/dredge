@@ -1806,30 +1806,46 @@ class BounceAvgESPerp(object):
                 minus_J0sq_Teff = -1 * J0sq[ii,0,0,:,:,np.newaxis] * inv_Teff
                 minus_J0sq_Teff = minus_J0sq_Teff.astype(np.complex128)
 
-                result_re, result_im = self._chi_GK_kernel(
-                #result = _chi_GK_kernel(
-                    omega_re_vec    = self.omega_re_vec,
-                    omega_im_vec    = self.omega_im_vec,
+                # simplest numpy version
+                result = self._chi_GK_kernel5D(
                     om_bkg          = om_bkg,
                     om_drift        = om_drift,
                     minus_J0sq_Teff = minus_J0sq_Teff,
-                    df              = self.species.df,
-                    ########################
-                    # below args passed to _bounce_average_njit_kernel
-                    Bsamp_grid     = self.Bmag,
-                    s_grid         = self.ssamp,
-                    E_grid         = self.E,
-                    mu_grid        = self.mu,
-                    vperp_vec      = self.species.vperp_vec,
-                    vprll_vec      = self.species.vprll_vec,
-                    mass           = self.species.mass,
-                    dB_ds2_origin  = self.dB_ds2_origin,
-                    tbounce4th     = self.tbounce4th,
-                    tbounce4th_max = self.TBOUNCE4TH_MAX,
                 )
 
-                mom[ii,:,:] += (result_re + 1j*result_im)
-                #mom[ii,:,:] += (result)
+                # apply njit to the bounce-average integral only,
+                # but keep usual numpy loops for Re(omega), Im(omega)
+
+                #result = self._chi_GK_kernel5D_numba_BA(
+                #    om_bkg          = om_bkg,
+                #    om_drift        = om_drift,
+                #    minus_J0sq_Teff = minus_J0sq_Teff,
+                #)
+
+                # NUMBA PARALLELIZED VERSION
+
+                #result = self._chi_GK_kernel5D_numba_all(
+                #    omega_re_vec    = self.omega_re_vec,
+                #    omega_im_vec    = self.omega_im_vec,
+                #    om_bkg          = om_bkg,
+                #    om_drift        = om_drift,
+                #    minus_J0sq_Teff = minus_J0sq_Teff,
+                #    df              = self.species.df,
+                #    ########################
+                #    # below args passed to _bounce_average_njit_kernel
+                #    Bsamp_grid     = self.Bmag,
+                #    s_grid         = self.ssamp,
+                #    E_grid         = self.E,
+                #    mu_grid        = self.mu,
+                #    vperp_vec      = self.species.vperp_vec,
+                #    vprll_vec      = self.species.vprll_vec,
+                #    mass           = self.species.mass,
+                #    dB_ds2_origin  = self.dB_ds2_origin,
+                #    tbounce4th     = self.tbounce4th,
+                #    tbounce4th_max = self.TBOUNCE4TH_MAX,
+                #)
+
+                mom[ii,:,:] += result
 
                 print('done k ', ii, 'of', self.k_vec.size, 'elapsed', datetime.now()-started)
 
@@ -1944,9 +1960,64 @@ class BounceAvgESPerp(object):
 
             return chi
 
+    # ------------------------------------------------------
+    # kernels for 5D (omega, velocity, bounce-average) loops
+    # ------------------------------------------------------
+
+    #@staticmethod
+    def _chi_GK_kernel5D(
+            self,
+            om_bkg,
+            om_drift,
+            minus_J0sq_Teff,
+    ):
+        """Pure numpy, no numba"""
+        result_BA = np.empty_like(self.species.df, dtype=np.complex128)
+        result = np.empty((self.omega_re_vec.size, self.omega_im_vec.size),
+                          dtype=np.complex128)
+        for ii in range(self.omega_re_vec.size):
+            for jj in range(self.omega_im_vec.size):
+                omv = self.omega_re_vec[ii] + 1j*self.omega_im_vec[jj]
+                # bounce-average integrand, shape (vperp,vprll,s)
+                x_grid = (omv - om_bkg) / (omv - om_drift) * minus_J0sq_Teff
+                # bounce-average integral, shape (vperp,vprll)
+                result_BA[:] = self.bounce_average( x_grid )
+                # gyrotropic h term's contribution to susceptibility
+                result[ii,jj] = self.species.moment( result_BA )
+            print('done omega_re ', ii, 'of', self.omega_re_vec.size)
+            #'elapsed', datetime.now()-started)
+        return result
+
+    def _chi_GK_kernel5D_numba_BA(
+            self,
+            om_bkg,
+            om_drift,
+            minus_J0sq_Teff,
+    ):
+        """Only use njit for bounce-average kernel, worst performance compared
+        to either (i) pure numpy, or (ii) use numba njit for both omega loops
+        """
+        result_BA_re = np.zeros_like(self.species.df, dtype=np.float64)
+        result_BA_im = np.zeros_like(self.species.df, dtype=np.float64)
+        result = np.empty((self.omega_re_vec.size, self.omega_im_vec.size),
+                          dtype=np.complex128)
+        for ii in range(self.omega_re_vec.size):
+            for jj in range(self.omega_im_vec.size):
+                omv = self.omega_re_vec[ii] + 1j*self.omega_im_vec[jj]
+                # bounce-average integrand, shape (vperp,vprll,s)
+                x_grid = (omv - om_bkg) / (omv - om_drift) * minus_J0sq_Teff
+                # bounce-average integral, shape (vperp,vprll)
+                result_BA_re[:] = self.bounce_average_njit( x_grid.real )
+                result_BA_im[:] = self.bounce_average_njit( x_grid.imag )
+                # gyrotropic h term's contribution to susceptibility
+                result[ii,jj] = self.species.moment( result_BA_re + 1j*result_BA_im )
+            print('done omega_re ', ii, 'of', self.omega_re_vec.size)
+            #'elapsed', datetime.now()-started)
+        return result
+
     @staticmethod
     @numba.njit(parallel=True)
-    def _chi_GK_kernel(
+    def _chi_GK_kernel5D_numba_all(
             omega_re_vec,
             omega_im_vec,
             om_bkg,
@@ -1978,10 +2049,8 @@ class BounceAvgESPerp(object):
             df = ndarray shape (vperp,vprll)
             ... REMAINING ARGUMENTS PASSED TO _bounce_average_njit_kernel ...
         """
-        result_re = np.empty((omega_re_vec.size, omega_im_vec.size),
-                             dtype=np.float64)
-        result_im = np.empty((omega_re_vec.size, omega_im_vec.size),
-                             dtype=np.float64)
+        result = np.empty((omega_re_vec.size, omega_im_vec.size),
+                          dtype=np.complex128)
 
         for ii in numba.prange(omega_re_vec.size):
             for jj in numba.prange(omega_im_vec.size):
@@ -2028,11 +2097,13 @@ class BounceAvgESPerp(object):
                 #for nn in numba.prange(vperp_vec.size):
                 for nn in range(vperp_vec.size):  # using prange or not doesn't matter much
                     mom_reduced[nn] = np.trapezoid(x_BA_re[nn,:] * df[nn,:], vprll_vec)
-                result_re[ii,jj] = np.trapezoid(mom_reduced * 2*np.pi*vperp_vec, vperp_vec)
+                mom_re = np.trapezoid(mom_reduced * 2*np.pi*vperp_vec, vperp_vec)
 
                 #for nn in numba.prange(vperp_vec.size):
                 for nn in range(vperp_vec.size):  # using prange or not doesn't matter much
                     mom_reduced[nn] = np.trapezoid(x_BA_im[nn,:] * df[nn,:], vprll_vec)
-                result_im[ii,jj] = np.trapezoid(mom_reduced * 2*np.pi*vperp_vec, vperp_vec)
+                mom_im = np.trapezoid(mom_reduced * 2*np.pi*vperp_vec, vperp_vec)
 
-        return result_re, result_im
+                result[ii,jj] = mom_re + 1j*mom_im
+
+        return result
