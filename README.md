@@ -41,6 +41,11 @@ editable mode:
 See `example/dclc.ipynb` for a calculation of DCLC slab dispersion, for a
 subtracted Maxwellian plasma.
 
+To test code features:
+
+    cd /path/to/dredge
+    pytest
+
 
 Developer notes
 ---------------

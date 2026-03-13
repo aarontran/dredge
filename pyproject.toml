@@ -7,6 +7,7 @@ name = "dredge"
 version = "26.03"
 dependencies = [
     "numpy>=2",
+    "pytest",
 ]
 authors = [
     {name = "Aaron Tran", email = "atran@physics.wisc.edu"},
