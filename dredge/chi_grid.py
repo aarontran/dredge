@@ -297,7 +297,7 @@ class ESPerp_GradRho_Species(object):
         # enforce normalization = 1
         # using the same integration scheme that will be used
         # in all the subsequent Bessel-weighted integrals...
-        norm = np.trapz(Freduced * 2*np.pi*vperp, vperp)
+        norm = np.trapezoid(Freduced * 2*np.pi*vperp, vperp)
         Freduced = Freduced/norm
 
         # dF/dvperp
@@ -314,14 +314,14 @@ class ESPerp_GradRho_Species(object):
             Jnsq = sp.special.jv(n, kg*vperpg)**2
 
             # \int dF/dvperp * 1/vperp * J_n^2(z) * 2*pi*vperp dvperp
-            bessel_Jnsq_Fprime[n,:] = np.trapz(Fprimeg * Jnsq * 2*np.pi, vperpg, axis=-1)
+            bessel_Jnsq_Fprime[n,:] = np.trapezoid(Fprimeg * Jnsq * 2*np.pi, vperpg, axis=-1)
 
             # \int F * J_n^2(z) * 2*pi*vperp dvperp
-            bessel_Jnsq_F[n,:] = np.trapz(Fg * Jnsq * 2*np.pi*vperpg, vperpg, axis=-1)
+            bessel_Jnsq_F[n,:] = np.trapezoid(Fg * Jnsq * 2*np.pi*vperpg, vperpg, axis=-1)
 
             # \int dF/dvperp * vperp * J_n^2(z) * 2*pi*vperp dvperp
             if with_bsum2:
-                bessel_Jnsq_Fprime_vpsq[n,:] = np.trapz(Fprimeg*vperpg * Jnsq * 2*np.pi*vperpg, vperpg, axis=-1)
+                bessel_Jnsq_Fprime_vpsq[n,:] = np.trapezoid(Fprimeg*vperpg * Jnsq * 2*np.pi*vperpg, vperpg, axis=-1)
 
             if verbose:
                 print(f'Bessel J_{n:d} integral done, elapsed', datetime.now()-started)
@@ -428,10 +428,10 @@ class ESPerp_GradRho_Species(object):
             assert vperp.ndim == 1
             assert Freduced.shape == vperp.shape
             # enforce normalization = 1
-            norm = np.trapz(Freduced * 2*np.pi*vperp, vperp)
+            norm = np.trapezoid(Freduced * 2*np.pi*vperp, vperp)
             Freduced = Freduced/norm
             # use <vperp^2> to compute FLR drift velocity
-            vpsq_moment = np.trapz(Freduced * vperp**2 * 2*np.pi*vperp, vperp)
+            vpsq_moment = np.trapezoid(Freduced * vperp**2 * 2*np.pi*vperp, vperp)
             # rescale epsilonB from reference species normalization
             # to current species normalization
             epsB = epsilonB * self.Ts_T0**0.5 * self.ms_m0**0.5 / abs(self.qs_q0)
@@ -1177,13 +1177,13 @@ class ESPerp_GradRho_GradB_Species(ESPerp_GradRho_Species):
         # enforce normalization = 1
         # using the same integration scheme that will be used
         # in all the subsequent Bessel-weighted integrals...
-        norm = np.trapz(Freduced * 2*np.pi*vperp, vperp)
+        norm = np.trapezoid(Freduced * 2*np.pi*vperp, vperp)
         Freduced = Freduced/norm
         # dF/dvperp
         Fprime = np.gradient(Freduced, vperp)
         # inv_a_cubed is 1/a^3 where a \propto Larmor radius
         # for a maxwellian, 1/a^3 = -2*sqrt(pi)*(2*kB*Ts/ms)^(-3/2)
-        inv_a_cubed = np.trapz(Fprime/vperp * 2*np.pi, vperp)
+        inv_a_cubed = np.trapezoid(Fprime/vperp * 2*np.pi, vperp)
 
         # scaled to species rho_Ls, Omega_cs already
         # broadcasting is faster than meshgrid
