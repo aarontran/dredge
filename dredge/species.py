@@ -131,7 +131,7 @@ class KineticPerpVDFGrid(Species):
     """
 
     def __init__(self, mass, charge, vperp_vec, df_reduced):
-        """
+        r"""
         Particle species in an ionized plasma represented by a non-relativistic
         velocity distribution on a numerical grid (v_perp,).
         Inputs:
@@ -175,7 +175,7 @@ class KineticVDFGrid(Species):
     """
 
     def __init__(self, mass, charge, vperp_vec, vprll_vec, df):
-        """
+        r"""
         Particle species in an ionized plasma represented by a non-relativistic
         velocity distribution on a numerical grid (v_perp, v_parallel).
         Inputs:

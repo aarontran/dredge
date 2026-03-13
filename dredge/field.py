@@ -81,7 +81,7 @@ class FieldLine(object):
         pass
 
     def query_dbhat_ds_at(self, s_points):
-        """
+        r"""
         Query directional derivative of magnetic-field unit vector along
         itself, d/ds( \hat{b} ), at arc-length coordinates along flux tube,
         broadcasting over input numpy.ndarray shape.
@@ -170,7 +170,7 @@ class FieldLineVec(FieldLine):
                  r_pos: np.ndarray,
                  z_pos: np.ndarray,
                  **kwargs):
-        """
+        r"""
         Axisymmetric magnetic field line in cylindrical geometry,
         represented by 1D vectors along \hat{b}.
 
@@ -321,7 +321,7 @@ class FieldLineParabolic(FieldLineVec):
                  axis_r = 1,
                  axis_z = 2,
                  ):
-        """
+        r"""
         Axisymmetric magnetic field with parabolic (r,z) dependence and
         curl(B)=0 in cylindrical geometry, which provides a simple analytic
         approximation to a magnetic mirror device, computed on a discrete grid

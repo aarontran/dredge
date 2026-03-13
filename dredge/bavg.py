@@ -15,7 +15,7 @@ def _bounce_average_njit_kernel(
         x_grid, Bsamp_grid, s_grid, E_grid, mu_grid, vperp_vec, vprll_vec,
         mass, dB_ds2_origin, tbounce4th, tbounce4th_max, norm=True
 ):
-    """
+    r"""
     Internal function to compute the bounce average, hottest logic
     Input:
         x_grid = quantity to be averaged; shape (vperp,vprll,s)
