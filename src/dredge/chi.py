@@ -9,6 +9,7 @@ from __future__ import division, print_function
 import numpy as np
 #import scipy as sp
 import scipy  # avoid collision with sp = alias for species
+import time
 
 from datetime import datetime
 import numba
@@ -1309,6 +1310,12 @@ class BounceAvgESPerp(object):
             x = np.ones_like(ssamp),
             norm = False,
         )
+
+        # useful for "hot" bounce average integrals
+        # pre-cache inverses to avoid costly multiplication!!!
+        self.inv_vprll_loc_abs = 1. / np.maximum(1e-99, np.abs(self.vprll_loc))
+        self.inv_tbounce4th = 1. / np.maximum(1e-99, np.abs(self.tbounce4th))
+
         return
 
     def bounce_average(self, x, norm=True):
@@ -1410,7 +1417,7 @@ class BounceAvgESPerp(object):
             result[:] = np.trapezoid(integrand, ssamp, axis=-1)
 
         if norm:
-            result /= self.tbounce4th
+            result *= self.inv_tbounce4th
 
         # handle the zero point specially
         # important that this comes AFTER the "nominal" norm factor is applied
@@ -1488,6 +1495,65 @@ class BounceAvgESPerp(object):
 
         return result
 
+    def bounce_average_norm_raw(self, x, norm=True):
+        """
+        Average over one-fourth(!) of an orbit for trapped particles,
+        which is equivalent to one-half for passing particles.
+
+        Remove safety checks and conditionals to go as fast as possible
+
+        Input:
+            x = np.ndarray shape (vperp, vprll, s)
+        Return:
+            np.ndarray shape (vperp, vprll) holding normalized bounce-average
+            of x
+        """
+
+        _t0 = time.perf_counter()
+
+        integrand = x * self.inv_vprll_loc_abs  # (vperp,vprll,s) grid
+
+        _t1 = time.perf_counter()
+
+        result = np.trapezoid(integrand, self.ssamp, axis=-1)
+        result *= self.inv_tbounce4th
+
+        _t2 = time.perf_counter()
+
+        pitch90 = (self.species.vprll_vec == 0)
+        muzero = (self.species.vperp_vec == 0)
+        #assert np.where(pitch90)[0].size == 1
+        #assert np.where(muzero)[0].size == 1
+        if np.any(pitch90):
+            jj = np.where(pitch90)[0][0]
+
+            # limiting form of bounce-average integral near the singularity,
+            # valid for the case x=1, but TODO MAY NOT BE CORRECT FOR x(s)
+            # spatially varying........ --ATr,2025nov06
+
+            # handle singularity v_parallel = 0
+            result[~muzero,jj] = (
+                # cannot use [~muzero,jj,0] b/c mixing selector functions
+                (x[...,0])[~muzero,jj]
+                * np.pi/2 * (self.species.mass / self.dB_ds2_origin)**0.5
+                / (self.mu[~muzero,jj])**0.5
+            ) * self.inv_tbounce4th[~muzero,jj]
+
+            # handle origin v_parallel = v_perp = 0
+            # force to the moment's value at s=0 at singular point??
+            #if np.any(muzero):
+            #    ii = np.where(muzero)[0][0]
+            #    result[ii,jj] = x[ii,jj,0]
+            result[muzero,jj] = x[muzero,jj,0]
+
+        _t3 = time.perf_counter()
+
+        self.time_bavg_setup += _t1 - _t0
+        self.time_bavg_trapz += _t2 - _t1
+        self.time_bavg_singu += _t3 - _t2
+
+        return result
+
     def bounce_average_njit(self, x, norm=True):
         """
         Average over one-fourth(!) of an orbit for trapped particles,
@@ -1514,7 +1580,7 @@ class BounceAvgESPerp(object):
                 norm           = norm
         )
 
-    def chi_GK(self, epsilonN, ns, Gforce, Teff_ceiling=None, loop=False,
+    def chi_GK(self, epsilonN, ns, Gforce, Teff_ceiling=None, method='expand',
                enable_Upsilon=False):
         """
         Compute gyro-averaged, GK-ordered susceptibility for exactly
@@ -1522,16 +1588,41 @@ class BounceAvgESPerp(object):
 
         Input:
             epsilonN = signed density gradient in cm^-1 at midplane z=0
+
             ns = single-species number density in cm^-3 at midplane z=0
+
             Gforce = external acceleration (cm/s^2); positive g points along +y axis
+
             Teff_ceiling = maximum effective temperature in erg,
                 to avoid division by zero in regions where distribution is
                 near or equal to zero
-            loop = compute chi using loop over (Re(omega),Im(omega)) instead of
-                doing massive broadcasted arrays?
-                Costly, but it helps us handle resonant denominator without
-                approximating omega_d/omega << 1.
+
+            method = what computational method to use?  In active development,
+                ask Aaron if you're not sure what to use.  Options are:
+
+                'loop6d' = break 6D integral over [k, Re(ω), Im(ω); vperp, vprll; s]
+                           into its own kernel, to experiment w/ different
+                           parallelization methods.
+
+                'loop5d' = break 5D integral over [Re(ω), Im(ω); vperp, vprll; s]
+                           into its own kernel, to experiment w/ different
+                           parallelization methods.
+                           MOST LIKELY this will be deprecated in the near
+                           future --ATr,2026mar13
+
+                'expand' = assume ωD/ω << 1, Taylor expand resonant denominator
+                           and evaluate with very fast broadcasted array ops
+                           b/c integral becomes "more" separable, so we don't
+                           need explicit parallelization of
+                           [k, Re(ω), Im(ω); vperp, vprll; s] integrals, but we
+                           miss correct physics at large drift speeds, and we
+                           also cannot evaluate the effect of new omega_Upsilon
+                           curvature x dF/dµ drift frequency term
+
             enable_Upsilon = enable experimental new drift term?
+                             WARNING not fully implemented, may not work!!
+        Return:
+            susceptibility chi on 3D grid of [k, Re(ω), Im(ω)]
         """
         sp = self.species
         omps_Omcs = sp.omps(ns) / sp.Omcs(self.B0)
@@ -1718,7 +1809,7 @@ class BounceAvgESPerp(object):
         # costly, but helps us correctly handle the resonant denominator
         # when omega_d \sim omega prevents us from expanding...
         # TODO want to parallelize this
-        if loop:
+        if method == 'loop5d':
 
             # Make the J_0^2(...) grid
             vperp_vth = sp.vperp_vec / sp.vth_perp
@@ -1854,9 +1945,65 @@ class BounceAvgESPerp(object):
 
             return chi
 
+        elif method == 'loop6d':
+
+            mom = np.zeros((self.k_vec.size,
+                            self.omega_re_vec.size,
+                            self.omega_im_vec.size), dtype=np.complex128)
+
+            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            # Boltzmann response f_{1B} independent of (k,ω), no loop needed
+
+            # bounce-average reduces (vperp,vprll) -> (vperp,vprll,s)
+            # then extend (vperp,vprll) -> (k,Re(ω),Im(ω),vperp,vprll)
+            inv_Teff_BA = self.bounce_average_njit( inv_Teff )
+            inv_Teff_BA = inv_Teff_BA[np.newaxis,np.newaxis,np.newaxis,:,:]
+
+            mom += sp.moment( inv_Teff_BA )
+
+            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            # Gyrotropic response h(...) requires loop over (k,Re(ω),Im(ω))
+            # to properly treat resonant denominator AND bounce averaging
+
+            #_ = mpi_decompose(self.k_vec.size,
+            #                  self.omega_re_vec.size,
+            #                  self.omega_im_vec.size,
+            #                  np0, np1, np2)  # TODO not implemented
+
+            #i0, i1, j0, j1, k0, k1 = _
+
+            result = self._chi_GK_kernel6D(
+                # integration coordinate sample points
+                k_vec           = self.k_vec       ,#[i0:i1],
+                omega_re_vec    = self.omega_re_vec,#[j0:j1],
+                omega_im_vec    = self.omega_im_vec,#[k0:k1],
+                vperp_vec       = sp.vperp_vec / sp.vth_perp,  # make dimensionless
+                vprll_vec       = sp.vprll_vec / sp.vth_perp,
+                # integration weight function
+                df              = sp.df * sp.vth_perp**3,
+                # Pieces to construct integrand
+                inv_Teff        = inv_Teff,
+                v_bkg           = v_bkg,
+                v_drift         = v_drift,
+                B_B0            = self.B_B0,
+                # TODO omega_Upsilon calculation will need the following...
+                #om_ups1_kernel,
+                #om_ups2_kernel,
+                #om_ups3_kernel,
+                #om_ups4_kernel,
+                #sp.q
+            )
+
+            mom += result
+
+            # parentheses minimize arithmetic operations
+            chi = (2. * omps_Omcs**2 / kk**2) * mom
+
+            return chi
+
         # Compute chi using vectorized operations over multi-D numpy arrays
         # be very careful about numpy axis positions and broadcasting
-        else:
+        elif method == 'expand':
 
             # Make the J_0^2(...) grid
             vperp_vth = sp.vperp_vec / sp.vth_perp
@@ -1959,6 +2106,138 @@ class BounceAvgESPerp(object):
             chi = (2. * omps_Omcs**2 / kk**2) * mom
 
             return chi
+
+    # ---------------------------------------------------------
+    # kernels for 6D (k, omega, velocity, bounce-average) loops
+    # ---------------------------------------------------------
+
+    def _chi_GK_kernel6D(
+            self,
+            k_vec,          # 1d array, dimensionless scaled to rLs (abs)
+            omega_re_vec,   # 1d array, dimensionless scaled to Omcs (signed)
+            omega_im_vec,   # 1d array, dimensionless scaled to Omcs (signed)
+            vperp_vec,      # 1d array, dimensionless scaled to vth
+            vprll_vec,      # 1d array, dimensionless scaled to vth
+            # integration weight function
+            df,         # shape (vperp,vprll)
+            # Pieces to construct integrand
+            inv_Teff,   # shape (vperp,vprll,s)
+            v_bkg,      # shape (vperp,vprll,s)
+            v_drift,    # shape (vperp,vprll,s)
+            B_B0,       # shape (vperp,vprll,s)
+    ):
+        """Pure numpy broadcasting, no numba or MPI"""
+
+        # broadcast over shape (k, Re(omega), Im(omega), vperp, vprll)
+        kk5d    = k_vec    [:,np.newaxis,np.newaxis,np.newaxis,np.newaxis]
+        vperp5d = vperp_vec[np.newaxis,np.newaxis,np.newaxis,:,np.newaxis]
+
+        # Make J_0^2(...) grid
+        J0sq = scipy.special.jv(0, kk5d * vperp5d)**2
+
+        # pre-alloc for bounce average and other compute
+        om_bkg          = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
+        om_drift        = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
+        minus_J0sq_Teff = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
+        x_grid          = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
+        result_BA       = np.empty_like(df,     dtype=np.complex128) # (vperp,vprll)
+        #result_BA_re    = np.empty_like(df,     dtype=np.float64) # (vperp,vprll)
+        #result_BA_im    = np.empty_like(df,     dtype=np.float64) # (vperp,vprll)
+        result          = np.empty((k_vec.size, omega_re_vec.size, omega_im_vec.size),
+                                   dtype=np.complex128)
+
+        started = datetime.now()
+
+        self._reset_timers()
+        _t00 = time.perf_counter()
+
+        for ii in range(k_vec.size):
+
+            _t0a = time.perf_counter()
+
+            kv  = k_vec[ii]
+
+            # sqrt(B/B0) allows k_perp to vary along field line
+            om_bkg[:]          = v_bkg   * kv * np.sqrt(B_B0)  # (vperp,vprll,s)
+            om_drift[:]        = v_drift * kv * np.sqrt(B_B0)
+            minus_J0sq_Teff[:] = -1 * J0sq[ii,0,0,:,:,np.newaxis] * inv_Teff
+
+            _t0b = time.perf_counter()
+            self.time_setup_kloop += _t0b - _t0a
+
+            for jj in range(omega_re_vec.size):
+                for nn in range(omega_im_vec.size):
+
+                    _t0 = time.perf_counter()
+
+                    omv = omega_re_vec[jj] + 1j*omega_im_vec[nn]        # scalar
+                    x_grid[:] = (omv - om_bkg)      # (vperp,vprll,s)
+                    x_grid /= (omv - om_drift)   # (vperp,vprll,s)
+                    # Splitting up the divide into its own line
+                    # yields O(~10%) performance gain over the simpler code:
+                    #     x_grid[:] = (omv - om_bkg) / (omv - om_drift)
+
+                    _t1 = time.perf_counter()
+
+                    x_grid *= minus_J0sq_Teff
+
+                    _t2 = time.perf_counter()
+
+                    #result_BA[:] = self.bounce_average( x_grid )        # (vperp,vprll)
+
+                    # njit is definitely slower...
+                    #result_BA_re[:] = self.bounce_average_njit( x_grid.real )  # (vperp,vprll)
+                    #result_BA_im[:] = self.bounce_average_njit( x_grid.imag )  # (vperp,vprll)
+                    #result_BA[:] = result_BA_re + 1j*result_BA_im
+
+                    # no safety checks; remove conditionals, redundant compute
+                    result_BA[:] = self.bounce_average_norm_raw( x_grid )        # (vperp,vprll)
+
+                    _t3 = time.perf_counter()
+
+                    result[ii,jj,nn] = self.species.moment( result_BA ) # scalar
+
+                    _t4 = time.perf_counter()
+
+                    self.time_setup_omloop_grid += _t1 - _t0
+                    self.time_setup_omloop_J0sq += _t2 - _t1
+                    self.time_bavg  += _t3 - _t2
+                    self.time_mom   += _t4 - _t3
+
+                #print('done omega_re ', jj, 'of', omega_re_vec.size,
+                #      'elapsed', datetime.now()-started)
+
+        _t99 = time.perf_counter()
+
+        self.time_tot += _t99 - _t00
+
+        print(f'time setup_kloop {self.time_setup_kloop:.6f}')
+        print(f'time setup_ωloop {self.time_setup_omloop_grid + self.time_setup_omloop_J0sq:.6f}')
+        print(f'     ... grid    ... {self.time_setup_omloop_grid:.6f}')
+        print(f'     ... J0sq    ... {self.time_setup_omloop_J0sq:.6f}')
+        print(f'time bavg        {self.time_bavg      :.6f}')
+        print(f'     ... setup   ... {self.time_bavg_setup:.6f}')
+        print(f'     ... trapz   ... {self.time_bavg_trapz:.6f}')
+        print(f'     ... singu   ... {self.time_bavg_singu:.6f}')
+        print(f'time mom         {self.time_mom       :.6f}')
+        print(f'time tot         {self.time_tot       :.6f}')
+
+        return result
+
+    # ------------------------------------------------------
+    # profiling, internal methods for dev use
+    # ------------------------------------------------------
+
+    def _reset_timers(self):
+        self.time_setup_kloop = 0
+        self.time_setup_omloop_grid = 0
+        self.time_setup_omloop_J0sq = 0
+        self.time_bavg = 0
+        self.time_bavg_setup = 0
+        self.time_bavg_trapz = 0
+        self.time_bavg_singu = 0
+        self.time_mom = 0
+        self.time_tot = 0
 
     # ------------------------------------------------------
     # kernels for 5D (omega, velocity, bounce-average) loops

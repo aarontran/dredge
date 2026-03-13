@@ -27,7 +27,7 @@ from dredge.const import (
 
 #print("Numba threads", numba.get_num_threads())
 
-def interchange():
+def interchange(ion_method='loop6d'):
 
     # ----------------------------------------------------------------
     # Define the magnetic geometry
@@ -170,7 +170,7 @@ def interchange():
         epsilonN = etaN,  # signed midplane value in cm^-1
         Gforce = 0,  # signed midplane value, in cm/s^2
         Teff_ceiling = 1e5 * ERG_PER_EV,  # 100 keV
-        loop = True,
+        method = ion_method,
         enable_Upsilon = False,
     )
 
@@ -179,7 +179,7 @@ def interchange():
         epsilonN = etaN,
         Gforce = 0,
         Teff_ceiling = 1e5 * ERG_PER_EV,  # 100 keV
-        loop = False
+        method = 'expand',
     )
 
     # dispersion relation computed on 3D grid of (k,Re(omega),Im(omega))
@@ -232,15 +232,40 @@ def interchange():
     return k_root, omega_re_root, omega_im_root
 
 
-def test_interchange():
+def within_rtol(test, truth, rtol=None, dtype=np.float64):
+    """Test two scalar numbers for agreement to machine precision"""
+    if rtol is None:
+        rtol = np.finfo(dtype).resolution
+    return np.abs( (test - truth) / truth ) < rtol
 
-    k_root, omega_re_root, omega_im_root = interchange()
 
-    def within_rtol(test, truth, rtol=None, dtype=np.float64):
-        """Test two scalar numbers for agreement to machine precision"""
-        if rtol is None:
-            rtol = np.finfo(dtype).resolution
-        return np.abs( (test - truth) / truth ) < rtol
+def test_interchange_expand():
+
+    k_root, omega_re_root, omega_im_root = interchange(ion_method='expand')
+
+    assert k_root.size == 1
+    assert omega_re_root.size == 1
+    assert omega_im_root.size == 1
+
+    assert within_rtol( omega_re_root[0], 0.000800009, rtol = 1e-9)
+    assert within_rtol( omega_im_root[0], 0.0072, rtol = 1e-8)
+
+
+def test_interchange_loop5d():
+
+    k_root, omega_re_root, omega_im_root = interchange(ion_method='loop5d')
+
+    assert k_root.size == 1
+    assert omega_re_root.size == 1
+    assert omega_im_root.size == 1
+
+    assert within_rtol( omega_re_root[0], 0.000800009, rtol = 1e-9)
+    assert within_rtol( omega_im_root[0], 0.0072, rtol = 1e-8)
+
+
+def test_interchange_loop6d():
+
+    k_root, omega_re_root, omega_im_root = interchange(ion_method='loop6d')
 
     assert k_root.size == 1
     assert omega_re_root.size == 1
