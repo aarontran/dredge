@@ -12,7 +12,8 @@ import scipy as sp
 
 from datetime import datetime
 
-#import numba
+from mpi4py import MPI
+import pytest
 
 import dredge as dr
 from dredge.const import (
@@ -25,7 +26,7 @@ from dredge.const import (
 
 #print("Numba threads", numba.get_num_threads())
 
-def interchange(ion_method='loop6d'):
+def interchange(ion_method='loop6d', proc_layout=(1,1,1)):
 
     # ----------------------------------------------------------------
     # Define the magnetic geometry
@@ -147,7 +148,8 @@ def interchange(ion_method='loop6d'):
     # convert user input to dimension-ful CGS units
     solve_grid = dr.chi.WaveGrid( k_vec / ion.rLs(B0),
                                   omega_re_vec * ion.Omcs(B0),
-                                  omega_im_vec * ion.Omcs(B0), )
+                                  omega_im_vec * ion.Omcs(B0),
+                                  proc_layout = proc_layout )
 
     calc_i = dr.chi.BounceAvgESPerp( grid = solve_grid,
                                      species = ion,
@@ -182,8 +184,14 @@ def interchange(ion_method='loop6d'):
 
     # dispersion relation computed on 3D grid of (k,Re(omega),Im(omega))
     dd = 1. + chi_i + chi_e
+    if solve_grid.world_size > 1:
+        dd_loc = dd
+        dd = solve_grid.gather(dd_loc)
 
     # ----------------------------------------------------------------
+
+    if solve_grid.rank != 0:
+        return  # kinda hacky
 
     # dispersion relation roots
     k_root, omega_re_root, omega_im_root, absd_root = solve_grid.roots(np.abs(dd))
@@ -237,6 +245,7 @@ def within_rtol(test, truth, rtol=None, dtype=np.float64):
     return np.abs( (test - truth) / truth ) < rtol
 
 
+@pytest.mark.mpi_skip
 def test_interchange_expand():
 
     k_root, omega_re_root, omega_im_root = interchange(ion_method='expand')
@@ -249,6 +258,7 @@ def test_interchange_expand():
     assert within_rtol( omega_im_root[0], 0.0072, rtol = 1e-8)
 
 
+@pytest.mark.mpi_skip
 def test_interchange_loop5d():
 
     k_root, omega_re_root, omega_im_root = interchange(ion_method='loop5d')
@@ -261,6 +271,7 @@ def test_interchange_loop5d():
     assert within_rtol( omega_im_root[0], 0.0072, rtol = 1e-8)
 
 
+@pytest.mark.mpi_skip
 def test_interchange_loop6d():
 
     k_root, omega_re_root, omega_im_root = interchange(ion_method='loop6d')
@@ -273,5 +284,53 @@ def test_interchange_loop6d():
     assert within_rtol( omega_im_root[0], 0.0072, rtol = 1e-8)
 
 
+@pytest.mark.mpi(min_size=4)
+def test_interchange_loop6d_nproc4():
+
+    result = interchange(ion_method='loop6d', proc_layout=(1,2,2))
+
+    if result is None:
+
+        #assert 1 == 0
+        # WARNING with pytest-mpi plugin
+        # the result MUST be tested on rank = 0
+        # TODO need to move final data / checks from cartesian comm rank = 0
+        # to global comm rank = 0 . . . right now it works ok still, but could
+        # fail in the future --ATr,2026mar14
+
+        return
+
+    else:
+        # only one rank gathers data,
+        # it doesn't have to be MPI.COMM_WORLD.Get_rank() == 0
+        # due to use of MPI_Cart_create(...)
+
+        assert 1 == 0
+
+        k_root, omega_re_root, omega_im_root = result
+
+        assert k_root.size == 1
+        assert omega_re_root.size == 1
+        assert omega_im_root.size == 1
+
+        assert within_rtol( omega_re_root[0], 0.000800009, rtol = 1e-9)
+        assert within_rtol( omega_im_root[0], 0.0072, rtol = 1e-8)
+
+
 if __name__ == '__main__':
-    test_interchange()
+
+    if MPI.COMM_WORLD.Get_size() == 1:
+
+        test_interchange_expand()
+        test_interchange_loop5d()
+        test_interchange_loop6d()
+        print("To test MPI functionality, rerun this script with 4 MPI ranks")
+
+    elif MPI.COMM_WORLD.Get_size() == 4:
+
+        test_interchange_loop6d_nproc4()
+        print("To test other functionality, rerun this script with 1 MPI rank")
+
+    else:
+
+        print("Invalid number of MPI ranks, use 1 or 4")

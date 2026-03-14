@@ -8,6 +8,7 @@ version = "26.03"
 dependencies = [
     "numpy>=2",
     "pytest",
+    "pytest-mpi @ git+https://github.com/aragilar/pytest-mpi.git@4b9aabaf",
 ]
 authors = [
     {name = "Aaron Tran", email = "atran@physics.wisc.edu"},

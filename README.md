@@ -46,10 +46,24 @@ using bounce-averaged gyrokinetic treatment of bi-Maxwellian plasma in a
 parabolic magnetic field.  Note: drift term arising from dF/dµ interacting with
 magnetic geometry is not fully implemented/tested yet.
 
+
+Testing
+-------
+
 To test code features:
 
     cd /path/to/dredge
     pytest
+
+To test MPI functionality, make sure you have pytest-mpi at a particular commit
+installed:
+
+    pip install git+https://github.com/aragilar/pytest-mpi.git@4b9aabaff9d
+
+Then invoke pytest using 4 MPI ranks:
+
+    cd /path/to/dredge
+    mpirun -n 4 python -m pytest --with-mpi
 
 
 Developer notes
