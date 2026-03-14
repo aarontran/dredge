@@ -5,3 +5,4 @@ from . import special
 from . import species
 #from .species import Species
 from . import vdf
+from . import wavegrid
