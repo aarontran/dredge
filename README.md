@@ -32,8 +32,38 @@ Usage
 The user interface is NOT stable and continuously evolving, no guarantees of
 backwards compatibility.
 
+"dredge" can be installed as a Python package.  It is suggested to use pip's
+editable mode:
+
+    cd /path/to/dredge
+    pip install -e . --no-cache-dir
+
 See `example/dclc.ipynb` for a calculation of DCLC slab dispersion, for a
 subtracted Maxwellian plasma.
+
+See `example/driver.py` for MPI-parallelized calculation of slab interchange,
+using bounce-averaged gyrokinetic treatment of bi-Maxwellian plasma in a
+parabolic magnetic field.  Note: drift term arising from dF/dµ interacting with
+magnetic geometry is not fully implemented/tested yet.
+
+
+Testing
+-------
+
+To test code features:
+
+    cd /path/to/dredge
+    pytest
+
+To test MPI functionality, make sure you have pytest-mpi at a particular commit
+installed:
+
+    pip install git+https://github.com/aragilar/pytest-mpi.git@4b9aabaff9d
+
+Then invoke pytest using 4 MPI ranks:
+
+    cd /path/to/dredge
+    mpirun -n 4 python -m pytest --with-mpi
 
 
 Developer notes
@@ -61,11 +91,13 @@ Short-term possible improvements:
 Long-term/stretch goals:
 * Dispersion for any k angle with gradient (maybe faster to fork ALPS instead)
 * Hua-Sheng Xie's matrix solve method
-* Parallelize (multiprocessing, pandas/dask, MPI, something else?)
 
 Philosophy: human time is costly, computer time and memory is cheap, so use
 simple, easy-to-debug, brute force methods whenever possible (except in
 time-sensitive pieces of code).
+
+Follow [Google's Python style guide](https://google.github.io/styleguide/pyguide.html),
+flexibly.
 
 Thanks to:
 * Xinyi Guo for a parallel EM dispersion solver, pieces of which were spun off
