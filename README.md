@@ -41,6 +41,11 @@ editable mode:
 See `example/dclc.ipynb` for a calculation of DCLC slab dispersion, for a
 subtracted Maxwellian plasma.
 
+See `example/driver.py` for MPI-parallelized calculation of slab interchange,
+using bounce-averaged gyrokinetic treatment of bi-Maxwellian plasma in a
+parabolic magnetic field.  Note: drift term arising from dF/dµ interacting with
+magnetic geometry is not fully implemented/tested yet.
+
 To test code features:
 
     cd /path/to/dredge
@@ -72,7 +77,6 @@ Short-term possible improvements:
 Long-term/stretch goals:
 * Dispersion for any k angle with gradient (maybe faster to fork ALPS instead)
 * Hua-Sheng Xie's matrix solve method
-* Parallelize (multiprocessing, pandas/dask, MPI, something else?)
 
 Philosophy: human time is costly, computer time and memory is cheap, so use
 simple, easy-to-debug, brute force methods whenever possible (except in
