@@ -4,8 +4,6 @@ Trace dispersion branches by numerical root finding instead of working on a
 grid
 """
 
-from __future__ import division, print_function
-
 import numpy as np
 import scipy as sp
 

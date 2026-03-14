@@ -3,8 +3,6 @@
 Special functions useful for plasma dispersion calculations
 """
 
-from __future__ import division, print_function
-
 import numpy as np
 import scipy as sp
 

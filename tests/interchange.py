@@ -5,8 +5,6 @@ Only checks fluid long-wavelength limit,
 but it exercises many different pieces of the code
 """
 
-from __future__ import division, print_function
-
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np

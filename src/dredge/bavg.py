@@ -2,8 +2,6 @@
 Code to compute bounce-average integrals
 """
 
-from __future__ import division, print_function
-
 import numba
 import numpy as np
 

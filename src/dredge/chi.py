@@ -4,8 +4,6 @@ on uniform grids of (k, Re(omega), Im(omega)) to help us quickly sweep
 parameter space of (Tc/T0, nc/n0, epsilon).
 """
 
-from __future__ import division, print_function
-
 import numpy as np
 #import scipy as sp
 import scipy  # avoid collision with sp = alias for species
