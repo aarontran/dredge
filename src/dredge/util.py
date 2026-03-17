@@ -5,6 +5,20 @@ Utility methods
 
 import numpy as np
 
+from mpi4py import MPI
+
+
+def print0(*args, **kwargs):
+    """Print only on MPI global communicator rank 0"""
+    if MPI.COMM_WORLD.Get_rank() == 0:
+        return print(f'[{rank:d}]', x, *args, **kwargs)
+
+
+def printn(x, *args, **kwargs):
+    """Print with MPI global communicator rank prefixed"""
+    rank = MPI.COMM_WORLD.Get_rank()
+    return print(f'[{rank:d}]', x, *args, **kwargs)
+
 
 def searchsortedclosest(a, v, side='left'):
     """

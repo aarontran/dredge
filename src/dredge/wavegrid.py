@@ -6,6 +6,7 @@ response calculation
 import numpy as np
 from mpi4py import MPI
 
+from .util import print0, printn
 
 class WaveGrid(object):
     """
@@ -66,10 +67,10 @@ class WaveGrid(object):
         self.sz, self.lz = self.span(self.NZ, proc_layout[2], self.block_idxs[2])
 
         # TODO DEV/DEBUGGING
-        self.printn("block", self.block_idxs,
-                    f"global idx ({self.sx:d},{self.sy:d},{self.sz:d})",
-                    f"offset ({self.lx:d},{self.ly:d},{self.lz:d})",
-                    f"Nvoxels {self.lx*self.ly*self.lz}")
+        printn("MPI block", self.block_idxs,
+               f"global idx ({self.sx:d},{self.sy:d},{self.sz:d})",
+               f"offset ({self.lx:d},{self.ly:d},{self.lz:d})",
+               f"Nvoxels {self.lx*self.ly*self.lz}")
 
         # Global domain vectors
         self.k_vec_global        = k_vec_global
@@ -93,15 +94,6 @@ class WaveGrid(object):
         assert np.all(np.diff(self.omega_re_vec) > 0)
         assert np.all(np.diff(self.omega_im_vec) > 0)
         assert np.all(np.diff(self.k_vec) > 0)
-
-    def print0(self, *args, **kwargs):
-        """Print only on rank 0"""
-        if self.rank == 0:
-            return print(*args, **kwargs)
-
-    def printn(self, x, *args, **kwargs):
-        """Print with MPI rank prefixed"""
-        return print(f'[{self.rank:d}]', x, *args, **kwargs)
 
     @staticmethod
     def _validate_monotony(name, vec):

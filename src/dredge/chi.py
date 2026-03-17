@@ -18,6 +18,7 @@ from .species import Species, KineticVDFGrid
 from .field import FieldLineVec
 from .const import CLIGHT
 from .bavg import _bounce_average_njit_kernel
+from .util import print0, printn
 from .wavegrid import WaveGrid
 
 # beware... changing temperature, mass, charge,
@@ -143,7 +144,7 @@ class SlabESPerp(object):
             # = e^(-λ) * I_n(λ)
             bessel_In_F     [n,:] = arg
             if verbose:
-                print(f'Bessel I_{n:d} integral done, elapsed', datetime.now()-started)
+                printn(f'Bessel I_{n:d} integral done, elapsed', datetime.now()-started)
 
         self.bessel_Fprime = bessel_In_Fprime
         self.bessel_F      = bessel_In_F
@@ -215,7 +216,7 @@ class SlabESPerp(object):
                 bessel_Jnsq_Fprime_vpsq[n,:] = np.trapezoid(Fprimeg*vperpg * Jnsq * 2*np.pi*vperpg, vperpg, axis=-1)
 
             if verbose:
-                print(f'Bessel J_{n:d} integral done, elapsed', datetime.now()-started)
+                printn(f'Bessel J_{n:d} integral done, elapsed', datetime.now()-started)
 
         self.bessel_Fprime = bessel_Jnsq_Fprime
         self.bessel_F      = bessel_Jnsq_F
@@ -349,7 +350,7 @@ class SlabESPerp(object):
         ##          bsum0 += n * (inv_om_minus - inv_om_plus) * bessel_Fprime[n,...]
         ##          bsum1 +=     (inv_om_minus + inv_om_plus) * bessel_F[n,...]
         ##      if verbose:
-        ##          print(f'Bessel J_{n:d} sum done, elapsed', datetime.now()-started)
+        ##          printn(f'Bessel J_{n:d} sum done, elapsed', datetime.now()-started)
         ##  # normalization factors
         ##  bsum0 *= (1./self.k_vec**2)[:,np.newaxis,np.newaxis]
 
@@ -375,7 +376,7 @@ class SlabESPerp(object):
                 bsum2 += invres * bessel_Fprime_vpsq[n,...]
 
             if verbose:
-                print(f'Bessel n={n:d} summand done, elapsed', datetime.now()-started)
+                printn(f'Bessel n={n:d} summand done, elapsed', datetime.now()-started)
 
         # normalization factors
         # hoist outside loop to reduce arithmetic operations
@@ -395,7 +396,7 @@ class SlabESPerp(object):
             bsum2 += bessel_Fprime_vpsq[0,...] / oo
 
         if verbose:
-            print('Bessel n=0 summand done, elapsed', datetime.now()-started)
+            printn('Bessel n=0 summand done, elapsed', datetime.now()-started)
 
         # cache for future computation
         self.bsum0 = bsum0
@@ -1825,7 +1826,7 @@ class BounceAvgESPerp(object):
 
                 mom[ii,:,:] += result
 
-                print('done k ', ii, 'of', self.k_vec.size, 'elapsed', datetime.now()-started)
+                printn('done k ', ii, 'of', self.k_vec.size, 'elapsed', datetime.now()-started)
 
             # parentheses minimize arithmetic operations
             chi = (2. * omps_Omcs**2 / kk**2) * mom
@@ -2091,23 +2092,23 @@ class BounceAvgESPerp(object):
                     self.time_bavg  += _t3 - _t2
                     self.time_mom   += _t4 - _t3
 
-                #print('done omega_re ', jj, 'of', omega_re_vec.size,
+                #printn('done omega_re ', jj, 'of', omega_re_vec.size,
                 #      'elapsed', datetime.now()-started)
 
         _t99 = time.perf_counter()
 
         self.time_tot += _t99 - _t00
 
-        print(f'time setup_kloop {self.time_setup_kloop:.6f}')
-        print(f'time setup_ωloop {self.time_setup_omloop_grid + self.time_setup_omloop_J0sq:.6f}')
-        print(f'     ... grid    ... {self.time_setup_omloop_grid:.6f}')
-        print(f'     ... J0sq    ... {self.time_setup_omloop_J0sq:.6f}')
-        print(f'time bavg        {self.time_bavg      :.6f}')
-        print(f'     ... setup   ... {self.time_bavg_setup:.6f}')
-        print(f'     ... trapz   ... {self.time_bavg_trapz:.6f}')
-        print(f'     ... singu   ... {self.time_bavg_singu:.6f}')
-        print(f'time mom         {self.time_mom       :.6f}')
-        print(f'time tot         {self.time_tot       :.6f}')
+        printn(f'time setup_kloop {self.time_setup_kloop:.6f}')
+        printn(f'time setup_ωloop {self.time_setup_omloop_grid + self.time_setup_omloop_J0sq:.6f}')
+        printn(f'     ... grid    ... {self.time_setup_omloop_grid:.6f}')
+        printn(f'     ... J0sq    ... {self.time_setup_omloop_J0sq:.6f}')
+        printn(f'time bavg        {self.time_bavg      :.6f}')
+        printn(f'     ... setup   ... {self.time_bavg_setup:.6f}')
+        printn(f'     ... trapz   ... {self.time_bavg_trapz:.6f}')
+        printn(f'     ... singu   ... {self.time_bavg_singu:.6f}')
+        printn(f'time mom         {self.time_mom       :.6f}')
+        printn(f'time tot         {self.time_tot       :.6f}')
 
         return result
 
@@ -2150,7 +2151,7 @@ class BounceAvgESPerp(object):
                 result_BA[:] = self.bounce_average( x_grid )
                 # gyrotropic h term's contribution to susceptibility
                 result[ii,jj] = self.species.moment( result_BA )
-            print('done omega_re ', ii, 'of', self.omega_re_vec.size)
+            printn('done omega_re ', ii, 'of', self.omega_re_vec.size)
             #'elapsed', datetime.now()-started)
         return result
 
@@ -2177,7 +2178,7 @@ class BounceAvgESPerp(object):
                 result_BA_im[:] = self.bounce_average_njit( x_grid.imag )
                 # gyrotropic h term's contribution to susceptibility
                 result[ii,jj] = self.species.moment( result_BA_re + 1j*result_BA_im )
-            print('done omega_re ', ii, 'of', self.omega_re_vec.size)
+            printn('done omega_re ', ii, 'of', self.omega_re_vec.size)
             #'elapsed', datetime.now()-started)
         return result
 
