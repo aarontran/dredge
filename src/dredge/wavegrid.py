@@ -44,7 +44,8 @@ class WaveGrid(object):
         self.cart_comm = MPI.COMM_WORLD.Create_cart(proc_layout,
                                                     periods=[False,False,False], reorder=True)
         assert self.cart_comm != MPI.COMM_NULL
-        self.rank = self.cart_comm.Get_rank()
+        self.world_rank = MPI.COMM_WORLD.Get_rank()
+        self.cart_rank = self.cart_comm.Get_rank()
         self.world_size = self.cart_comm.Get_size()
         self.proc_layout = proc_layout
         # Get my MPI topology coordinates in the 3D grid.
@@ -53,7 +54,7 @@ class WaveGrid(object):
         # rank=1 -> block_idxs=[0, 1, 0]
         # rank=2 -> block_idxs=[1, 0, 0]
         # rank=3 -> block_idxs=[1, 1, 0]
-        self.block_idxs = self.cart_comm.Get_coords(self.rank)
+        self.block_idxs = self.cart_comm.Get_coords(self.cart_rank)
 
         # Decompose the global indices into local ranges
         # NX,NY,NZ = global number of grid points in each dimension
@@ -135,7 +136,7 @@ class WaveGrid(object):
 
         # Why not MPI_Gatherv?  Don't prematurely optimize...  --ATr,2026mar13
 
-        if self.rank == 0:
+        if self.cart_rank == 0:
 
             global_arr = np.zeros((NX,NY,NZ), dtype=local_arr.dtype)
 
