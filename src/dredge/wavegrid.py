@@ -235,8 +235,8 @@ class WaveGrid(object):
         if len(inds[0]) == 0:
             return np.array([]), np.array([]), np.array([]), np.array([])
 
-        k_root        = self.k_vec[inds[0]]
-        omega_re_root = self.omega_re_vec[inds[1]]
-        omega_im_root = self.omega_im_vec[inds[2]]
+        k_root        = self.k_vec_global[inds[0]]
+        omega_re_root = self.omega_re_vec_global[inds[1]]
+        omega_im_root = self.omega_im_vec_global[inds[2]]
         arr_root      = arr[ inds[0], inds[1], inds[2] ]
         return k_root, omega_re_root, omega_im_root, arr_root
