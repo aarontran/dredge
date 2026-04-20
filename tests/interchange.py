@@ -190,7 +190,7 @@ def interchange(ion_method='loop6d', proc_layout=(1,1,1)):
 
     # ----------------------------------------------------------------
 
-    if solve_grid.rank != 0:
+    if solve_grid.world_rank != 0:
         return  # kinda hacky
 
     # dispersion relation roots
@@ -291,7 +291,6 @@ def test_interchange_loop6d_nproc4():
 
     if result is None:
 
-        #assert 1 == 0
         # WARNING with pytest-mpi plugin
         # the result MUST be tested on rank = 0
         # TODO need to move final data / checks from cartesian comm rank = 0
@@ -304,8 +303,6 @@ def test_interchange_loop6d_nproc4():
         # only one rank gathers data,
         # it doesn't have to be MPI.COMM_WORLD.Get_rank() == 0
         # due to use of MPI_Cart_create(...)
-
-        assert 1 == 0
 
         k_root, omega_re_root, omega_im_root = result
 
