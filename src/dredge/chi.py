@@ -1152,9 +1152,14 @@ class BounceAvgESPerp(object):
         self.bhat = self.Bvec / self.Bmag[np.newaxis,...]  # shape (3,vperp,vprll,NS_RESOLUTION)
 
         # ratio B(s)/B(s=0) along field line; shape (vperp,vprll,NS_RESOLUTION)
-        # useful for factors of Omega_c(s)/Omega_c(s=0) and k(s)/k(s=0)
+        # useful for factors of Omega_c(s)/Omega_c(s=0)
         # B(s=0) should be the same for all points in velocity space
         self.B_B0 = self.Bmag / (self.Bmag[:,:,0])[:,:,np.newaxis]
+
+        # ratio r(s)/r(s=0) along field line; shape (vperp,vprll,NS_RESOLUTION)
+        # useful for factors of k(s)/k(s=0) if we assume k_perp ~ m/r
+        # where m is azimuthal mode number and r is cylindrical radius
+        self.r_r0 = self.rsamp / (self.rsamp[:,:,0])[:,:,np.newaxis]
 
         # LOCAL signed cyclotron frequency at varying "s"
         # shape (vperp,vprll,NS_RESOLUTION)
@@ -1584,14 +1589,29 @@ class BounceAvgESPerp(object):
         # compute velocities on (vperp,vprll,s) grid
 
         # DIAMAGNETIC DRIFT VELOCITY (dimensionless)
-        # Assume epsN ~ sqrt(B) along the field line from flux freezing
         #
         # WARNING (2025 Summer/Fall): epsN is the factor in (1 + epsN*R_y)
         # where R_y is guiding center; epsN is NOT the same as n/(dn/dy)
         # because of boltzmann factor when G is present, see my paper and LaTeX
         # notes.  This can be traced to choice of coordinates (exact vs.
         # inexact constants of motion) used when deriving GK equations.
-        v_star = 0.5 * (-epsN) * Teff / np.sqrt(self.B_B0)
+        #
+        # NOTE: \omega_* is a flux function in Maxwellian GK, but v_* includes
+        # net scale factor accounting for variation of (k, B, grad(n)) along the
+        # magnetic field line.  The diamagnetic velocity reads:
+        #
+        #    v_* = 0.5 \frac{\Lambda(s)}{T_{0\perp}} \frac{\rho(s=0)}{L_F(s=0)}
+        #          \frac{B(0)}{B(s)} \frac{ \del\psi|_s }{ \del\psi|_{s=0} }
+        #
+        # where the last two factors resolve to:
+        #
+        #   r(s)/r(s=0) = \frac{B(0)}{B(s)} \frac{ \del\psi|_s }{ \del\psi|_{s=0} }
+        #
+        # and I think it's valid even in non-paraxial limit.
+        # --ATr,2026april21
+
+        #v_star = 0.5 * (-epsN) * Teff / np.sqrt(self.B_B0)  # OLD 2025fall/2026spring less accurate
+        v_star = 0.5 * (-epsN) * Teff * self.r_r0
 
         # GRAVITY DRIFT VELOCITY (dimensionless)
         # v_grav/v_th = Gforce / v_th,perp / Omci(0) * Omci(0)/Omci(s)
@@ -1750,12 +1770,12 @@ class BounceAvgESPerp(object):
                 kv  = self.k_vec[ii]  # k_\perp at midplane z=0, suffix 'v' for value
 
                 # shape (vperp,vprll,s)
-                # sqrt(B/B0) allows k_perp to vary along field line
+                # r/r0 accounts for k_perp varying along field line
                 # In omega_Upsilon, need sign(q) for ALL bare J_1 functions b/c
                 # k_perp norm uses abs(Omega_cs).
                 # Omit for J0, J2, Jarg*J1 (even functions of k_perp).
-                om_bkg[:]   = v_bkg   * kv * np.sqrt(self.B_B0)
-                om_drift[:] = v_drift * kv * np.sqrt(self.B_B0)
+                om_bkg[:]   = v_bkg   * kv / self.r_r0
+                om_drift[:] = v_drift * kv / self.r_r0
 
                 om_ups1[:] =         J1_J0[ii,0,0,:,:,np.newaxis] * om_ups1_kernel * np.sign(sp.q)
                 # Use Taylor expansion of J_1(..) because J_1 / v_\perp
@@ -1765,9 +1785,10 @@ class BounceAvgESPerp(object):
                         * np.sum(psihat * self.dbhat_ds, axis=0)
                         / sp.vth_perp / abs(sp.Omcs(self.B0))  # "standard" normalization
                         * np.sign(sp.q)  # re-attach the charge sign
-                        / np.sqrt(self.B_B0)  # because "plain" k_perp/Omega0 appears without
+                        * self.r_r0      # because "plain" k_perp/Omega0 appears without
                                          # v_perp factor, it's no longer bounce invariant,
                                          # we need to reattach B(s)/B0 factor
+                                         # REPLACED WITH r(s)/r(0) --ATr,2026apr21
                         # This assignment must follow (cannot precede)
                         # the om_ups1[:] = ... statement
                 )[self.vperp_loc==0]  # notice duplicate selector needed here
@@ -1875,7 +1896,7 @@ class BounceAvgESPerp(object):
                 inv_Teff        = inv_Teff,
                 v_bkg           = v_bkg,
                 v_drift         = v_drift,
-                B_B0            = self.B_B0,
+                r_r0            = self.r_r0,
                 # TODO omega_Upsilon calculation will need the following...
                 #om_ups1_kernel,
                 #om_ups2_kernel,
@@ -1912,20 +1933,19 @@ class BounceAvgESPerp(object):
             # bounce-average integrand needs 1/Teff(s) factor
             # when background F0 is non-Maxwellian
 
-            # Also multiply by sqrt(B/B0) or (B/B0) to account for kperp
-            # changing along fluxtube, assuming simple flux freezing
-            # TODO DOUBLE CHECK CAREFULLY, NEED FEEDBACK ON THIS --ATr,2025nov13
+            # The (r/r0) factors account for kperp changing along fluxtube,
+            # with r = cylindrical radius, azimuthal mode number held constant
 
             ωD_Teff_BA = kk5d * (
-                    self.bounce_average_njit( v_drift * inv_Teff * np.sqrt(self.B_B0) )
+                    self.bounce_average_njit( v_drift * inv_Teff / self.r_r0 )
                     [np.newaxis,np.newaxis,np.newaxis,:,:]
             )
             ωbkg_Teff_BA = kk5d * (
-                    self.bounce_average_njit( v_bkg * inv_Teff * np.sqrt(self.B_B0) )
+                    self.bounce_average_njit( v_bkg * inv_Teff / self.r_r0 )
                     [np.newaxis,np.newaxis,np.newaxis,:,:]
             )
             ωDωbkg_Teff_BA = kk5d**2 * (
-                    self.bounce_average_njit( v_drift * v_bkg * inv_Teff * self.B_B0 )
+                    self.bounce_average_njit( v_drift * v_bkg * inv_Teff / self.r_r0**2 )
                     [np.newaxis,np.newaxis,np.newaxis,:,:]
             )
 
@@ -2014,7 +2034,7 @@ class BounceAvgESPerp(object):
             inv_Teff,   # shape (vperp,vprll,s)
             v_bkg,      # shape (vperp,vprll,s)
             v_drift,    # shape (vperp,vprll,s)
-            B_B0,       # shape (vperp,vprll,s)
+            r_r0,       # shape (vperp,vprll,s)
     ):
         """Pure numpy broadcasting, no numba or MPI"""
 
@@ -2026,6 +2046,7 @@ class BounceAvgESPerp(object):
         J0sq = scipy.special.jv(0, kk5d * vperp5d)**2
 
         # pre-alloc for bounce average and other compute
+        inv_r_r0        = 1./r_r0
         om_bkg          = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
         om_drift        = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
         minus_J0sq_Teff = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
@@ -2047,9 +2068,9 @@ class BounceAvgESPerp(object):
 
             kv  = k_vec[ii]
 
-            # sqrt(B/B0) allows k_perp to vary along field line
-            om_bkg[:]          = v_bkg   * kv * np.sqrt(B_B0)  # (vperp,vprll,s)
-            om_drift[:]        = v_drift * kv * np.sqrt(B_B0)
+            # r/r0 accounts for k_perp varying along field line
+            om_bkg[:]          = v_bkg   * kv * inv_r_r0  # (vperp,vprll,s)
+            om_drift[:]        = v_drift * kv * inv_r_r0
             minus_J0sq_Teff[:] = -1 * J0sq[ii,0,0,:,:,np.newaxis] * inv_Teff
 
             _t0b = time.perf_counter()
