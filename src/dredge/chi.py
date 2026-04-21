@@ -1137,6 +1137,8 @@ class BounceAvgESPerp(object):
         self.Bturn = Bturn  # (vperp,vprll) grid  # useful for viz, not needed For integral
         self.sturn = sturn  # (vperp,vprll) grid
         self.ssamp = ssamp  # (vperp,vprll,NS_RESOLUTION) grid
+        self.rsamp = fld.query_r_at(self.ssamp)  # shape (vperp,vprll,NS_RESOLUTION)
+        #self.zsamp = fld.query_z_at(self.ssamp)  # shape (vperp,vprll,NS_RESOLUTION)
 
         # philosophy, only compute stuff that uses vgrid and Bgeometry info,
         # and keep everything in CGS units for now; let user/caller handle the

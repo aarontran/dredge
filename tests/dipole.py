@@ -67,15 +67,12 @@ def test_dipole_bounce_average():
     )
 
     calc.setup_bounce_average(NS_RESOLUTION = 30)
-    # additional setup for bounce average
-    # that is not fully incorporated into my code
-    rsamp = field.query_r_at(calc.ssamp)  # shape (vperp,vprll,s)
 
     # compute bounce-averaged (omega_drift / m) where m = azimuthal mode number
     # this includes k_\perp(s) structure into the bounce average
     calc._reset_timers()
-    omega_m_gradB_BA = calc.bounce_average_norm_raw(calc.v_gradB[0]/rsamp, norm=True)
-    omega_m_curv_BA  = calc.bounce_average_norm_raw(calc.v_curv[0]/rsamp,  norm=True)
+    omega_m_gradB_BA = calc.bounce_average_norm_raw(calc.v_gradB[0]/calc.rsamp, norm=True)
+    omega_m_curv_BA  = calc.bounce_average_norm_raw(calc.v_curv[0]/calc.rsamp,  norm=True)
     omega_m_drift_BA = omega_m_gradB_BA + omega_m_curv_BA
 
     # ----------------------------------------------------------------
