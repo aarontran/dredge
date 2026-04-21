@@ -9,6 +9,7 @@ import scipy  # avoid collision with sp = alias for species
 
 from scipy.interpolate import RegularGridInterpolator
 
+from .const import CLIGHT
 
 class FieldLine(object):
     """
@@ -455,4 +456,139 @@ class FieldLineParabolic(FieldLineVec):
             vz = Bz/Bmag
             r[ii] = r[ii-1] + vr*ds
             z[ii] = z[ii-1] + vz*ds
+        return (r,z)
+
+
+class FieldLineDipoleFarField(FieldLineVec):
+    """
+    Axisymmetric dipole magnetic field, far-field limit,
+    using Equations (2.13a-d) of Mishchenko et al. (2018, JPP).
+    Field is computed on a discrete grid of cylindrical (r,z) positions.
+    """
+    def __init__(self,
+                 I: float,
+                 r0: float,
+                 req: float,
+                 ds: float,
+                 n_steps: float,
+                 axis_r = 1,
+                 axis_z = 2,
+                 ):
+        r"""
+        Axisymmetric dipole magnetic field, far-field limit,
+        using Equations (2.13a-d) of Mishchenko et al. (2018, JPP).
+        Field is computed on a discrete grid of cylindrical (r,z) positions.
+        Field trace starts from (r,z)=(req,0) on the equatorial plane, where req
+        is a user-specified radius, and is performed using RK4 method.
+
+        Inputs:
+            I: current in statAmpere (CGS unit)
+            r0: current ring radius in cm (CGS unit)
+            req: radius at equatorial plane to select field line, in cm (CGS unit)
+            ds: step size in arc-length for field-line tracing, in cm (CGS unit)
+            n_steps: number of steps to trace field line
+            axis_r: which Cartesian (x,y,z) coordinate shall be radial at equatorial plane?
+            axis_z: which Cartesian (x,y,z) coordinate shall be axial at equatorial plane?
+        """
+        self.I = I
+        self.r0 = r0
+        self.M = np.pi * self.I * self.r0**2 / CLIGHT  # magnetic moment of current loop in CGS units
+        self.req = req
+        self.psi = self.M / self.req  # flux function at equatorial plane, identifies field line
+
+        # TODO if we implement more analytic functions, we may want to refactor
+        # out the general code framework for converting analytic functions to
+        # discrete data --ATr,2025nov15
+        r_pos, z_pos = self.trace_field_line(req, 0, ds=ds, n_steps=n_steps)
+
+        Bvec     = np.zeros((3,r_pos.size), dtype=r_pos.dtype)
+        gradBmag = np.zeros((3,r_pos.size), dtype=r_pos.dtype)
+
+        assert axis_r != axis_z
+        assert axis_r in [0,1,2]
+        assert axis_z in [0,1,2]
+        Bvec[axis_r]     = self.Br_func      (r_pos, z_pos)
+        Bvec[axis_z]     = self.Bz_func      (r_pos, z_pos)
+        gradBmag[axis_r] = self.dBmag_dr_func(r_pos, z_pos)
+        gradBmag[axis_z] = self.dBmag_dz_func(r_pos, z_pos)
+
+        super().__init__(
+            Bx = Bvec[0],
+            By = Bvec[1],
+            Bz = Bvec[2],
+            gradBmagx = gradBmag[0],
+            gradBmagy = gradBmag[1],
+            gradBmagz = gradBmag[2],
+            r_pos = r_pos,
+            z_pos = z_pos,
+        )
+
+    def Br_func(self, r, z):
+        """Compute B_r component at cylindrical (r,z) in cm"""
+        Brho = 2 * self.M * z / (r**2 + z**2)**2
+        Btheta = self.M * r / (r**2 + z**2)**2
+        return Brho * np.sin(np.arctan2(r,z)) + Btheta * np.cos(np.arctan2(r,z))
+
+    def Bz_func(self, r, z):
+        """Compute B_z component at cylindrical (r,z) in cm"""
+        Brho = 2 * self.M * z / (r**2 + z**2)**2
+        Btheta = self.M * r / (r**2 + z**2)**2
+        return Brho * np.cos(np.arctan2(r,z)) - Btheta * np.sin(np.arctan2(r,z))
+
+    def dBmag_dr_func(self, r, z):
+        """Compute d|B|/dr at cylindrical (r,z) in cm"""
+        # Use Mathematica to check algebra
+        #   modB[r_, z_] := m/(r^2 + z^2)^2*Sqrt[4*z^2 + r^2];
+        #   Simplify[D[modB[r, z], r]]
+        return -3 * self.M * r * (r**2 + 5*z**2) / (r**2 + z**2)**3 / np.sqrt(4*z**2 + r**2)
+
+    def dBmag_dz_func(self, r, z):
+        """Compute d|B|/dz at cylindrical (r,z) in cm"""
+        # Use Mathematica to check algebra
+        #   modB[r_, z_] := m/(r^2 + z^2)^2*Sqrt[4*z^2 + r^2];
+        #   Simplify[D[modB[r, z], z]]
+        return -12 * self.M * z**3 / (r**2 + z**2)**3 / np.sqrt(4*z**2 + r**2)
+
+    def trace_field_line(self, r0, z0, ds=1., n_steps=10):
+        """
+        Trace magnetic field line using RK4 method, starting from
+        some initial (r0,z0) position.
+        Args:
+            r0: starting radius in cm
+            z0: starting axial coordinate in cm
+            ds: arc-length step size in cm
+            n_steps: number of steps to take
+        Return:
+            two-tuple (r,z) of radius and axial coordinates tracing a magnetic
+            field line; r and z are each a 1D numpy.ndarray of shape (n_steps,)
+        """
+        # TODO if we implement more analytic functions, we may want to refactor
+        # out the field-line tracing methods --ATr,2025nov15
+        r = np.empty(n_steps, dtype=np.float64)
+        z = np.empty(n_steps, dtype=np.float64)
+        r[0] = r0
+        z[0] = z0
+
+        def veloc(r, z):
+            """effective velocity for vector field tracing"""
+            Br = self.Br_func(r, z)
+            Bz = self.Bz_func(r, z)
+            Bmag = (Br**2 + Bz**2)**0.5
+            vr = Br/Bmag
+            vz = Bz/Bmag
+            return vr, vz
+
+        for ii in range(1, n_steps):
+            # 4th-order Runge-Kutta method for tracing field line
+            k1r, k1z = veloc(r[ii-1],
+                             z[ii-1])
+            k2r, k2z = veloc(r[ii-1] + 0.5*ds*k1r,
+                             z[ii-1] + 0.5*ds*k1z)
+            k3r, k3z = veloc(r[ii-1] + 0.5*ds*k2r,
+                             z[ii-1] + 0.5*ds*k2z)
+            k4r, k4z = veloc(r[ii-1] + ds*k3r,
+                             z[ii-1] + ds*k3z)
+            r[ii] = r[ii-1] + (ds/6.) * (k1r + 2*k2r + 2*k3r + k4r)
+            z[ii] = z[ii-1] + (ds/6.) * (k1z + 2*k2z + 2*k3z + k4z)
+
         return (r,z)
