@@ -549,16 +549,16 @@ class FieldLineDipoleFarField(FieldLineVec):
     def dBmag_dr_func(self, r, z):
         """Compute d|B|/dr at cylindrical (r,z) in cm"""
         # Use Mathematica to check algebra
-        #   modB[r_, z_] := m/(r^2 + z^2)^2*Sqrt[4*z^2 + r^2];
+        #   modB[r_, z_] := absM/(r^2 + z^2)^2*Sqrt[4*z^2 + r^2];
         #   Simplify[D[modB[r, z], r]]
-        return -3 * self.M * r * (r**2 + 5*z**2) / (r**2 + z**2)**3 / np.sqrt(4*z**2 + r**2)
+        return -3 * abs(self.M) * r * (r**2 + 5*z**2) / (r**2 + z**2)**3 / np.sqrt(4*z**2 + r**2)
 
     def dBmag_dz_func(self, r, z):
         """Compute d|B|/dz at cylindrical (r,z) in cm"""
         # Use Mathematica to check algebra
-        #   modB[r_, z_] := m/(r^2 + z^2)^2*Sqrt[4*z^2 + r^2];
+        #   modB[r_, z_] := absM/(r^2 + z^2)^2*Sqrt[4*z^2 + r^2];
         #   Simplify[D[modB[r, z], z]]
-        return -12 * self.M * z**3 / (r**2 + z**2)**3 / np.sqrt(4*z**2 + r**2)
+        return -12 * abs(self.M) * z**3 / (r**2 + z**2)**3 / np.sqrt(4*z**2 + r**2)
 
     def trace_field_line(self, r0, z0, ds=1., n_steps=10):
         """
