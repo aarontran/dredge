@@ -257,6 +257,9 @@ class FieldLineVec(FieldLine):
         self.dbhat_ds_x_interp = RegularGridInterpolator((self.s,), self.dbhat_ds_x, **kws)
         self.dbhat_ds_y_interp = RegularGridInterpolator((self.s,), self.dbhat_ds_y, **kws)
         self.dbhat_ds_z_interp = RegularGridInterpolator((self.s,), self.dbhat_ds_z, **kws)
+        # spatial-coordinate interpolators used for wavevector scale factors
+        self.r_interp         = RegularGridInterpolator((self.s,), self.r, **kws)
+        self.z_interp         = RegularGridInterpolator((self.s,), self.z, **kws)
 
         # interpolator to convert from B-field magnitude to arc length s
         # only works if B-field monotonically ascends/descends along s
@@ -299,6 +302,14 @@ class FieldLineVec(FieldLine):
         ky = self.dbhat_ds_y_interp(points)
         kz = self.dbhat_ds_z_interp(points)
         return np.array([kx, ky, kz])
+
+    def query_r_at(self, s_points):
+        points = np.asarray(s_points)[...,np.newaxis]
+        return self.r_interp(points)
+
+    def query_z_at(self, s_points):
+        points = np.asarray(s_points)[...,np.newaxis]
+        return self.z_interp(points)
 
     def query_s_at(self, B_points):
         points = np.asarray(B_points)[...,np.newaxis]
