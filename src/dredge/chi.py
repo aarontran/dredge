@@ -1616,10 +1616,16 @@ class BounceAvgESPerp(object):
 
         #v_star = 0.5 * (-epsN) * Teff / np.sqrt(self.B_B0)  # OLD 2025fall/2026spring less accurate
         v_star = 0.5 * (-epsN) * Teff * self.r_r0 * np.sign(sp.q)
+        # if Bz < 0, v_* flips direction and \psi increases radially inwards
+        # query bhat_z at s=0 (midplane), at any point in velocity space
+        v_star *= np.sign(self.bhat[2,0,0,0])
 
         # GRAVITY DRIFT VELOCITY (dimensionless)
         # v_grav/v_th = Gforce / v_th,perp / Omci(0) * Omci(0)/Omci(s)
         v_grav = G / self.B_B0
+        # if Bz < 0, v_grav flips direction
+        # query bhat_z at s=0 (midplane), at any point in velocity space
+        v_grav *= np.sign(self.bhat[2,0,0,0])
 
         # BACKGROUND F0 VELOCITY (dimensionless)
         # encodes all the boltzmann response drifts...
