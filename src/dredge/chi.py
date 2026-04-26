@@ -1526,8 +1526,7 @@ class BounceAvgESPerp(object):
         sp = self.species
         omps_Omcs = sp.omps(ns) / sp.Omcs(self.B0)
         epsN = epsilonN * sp.rLs(self.B0)
-        # abs(Omcs) in Gforce norm is to match k normalization scheme
-        G = Gforce / sp.vth_perp / abs(sp.Omcs(self.B0))
+        G = Gforce / sp.vth_perp / sp.Omcs(self.B0)  # with sign factor attached
         kk = self.kk  # scaled to species rho_Ls
         oo = self.oo  # scaled to species Omega_cs
 
@@ -1605,6 +1604,7 @@ class BounceAvgESPerp(object):
         # magnetic field line.  The diamagnetic velocity reads:
         #
         #    v_* = 0.5 \frac{\Lambda(s)}{T_{0\perp}} \frac{\rho(s=0)}{L_F(s=0)}
+        #          \sign(q)
         #          \frac{B(0)}{B(s)} \frac{ \del\psi|_s }{ \del\psi|_{s=0} }
         #
         # where the last two factors resolve to:
@@ -1615,7 +1615,7 @@ class BounceAvgESPerp(object):
         # --ATr,2026april21
 
         #v_star = 0.5 * (-epsN) * Teff / np.sqrt(self.B_B0)  # OLD 2025fall/2026spring less accurate
-        v_star = 0.5 * (-epsN) * Teff * self.r_r0
+        v_star = 0.5 * (-epsN) * Teff * self.r_r0 * np.sign(sp.q)
 
         # GRAVITY DRIFT VELOCITY (dimensionless)
         # v_grav/v_th = Gforce / v_th,perp / Omci(0) * Omci(0)/Omci(s)
@@ -1632,13 +1632,11 @@ class BounceAvgESPerp(object):
         # grad(B) drift
         # Pre-cached drift velocity array shape = (3,vperp,vprll,NS_RESOLUTION)
         # in my axisymmetric slab approx, only use x (poloidal) component
-        # need charge sign factor to work with k normalization
-        v_drift += (self.v_gradB[0,...]/sp.vth_perp) * np.sign(sp.Omcs(self.B0))
+        v_drift += (self.v_gradB[0,...]/sp.vth_perp)
         # curvature drift
         # Pre-cached drift velocity array shape = (3,vperp,vprll,NS_RESOLUTION)
         # in my axisymmetric slab approx, only use x (poloidal) component
-        # need charge sign factor to work with k normalization
-        v_drift += (self.v_curv [0,...]/sp.vth_perp) * np.sign(sp.Omcs(self.B0))
+        v_drift += (self.v_curv [0,...]/sp.vth_perp)
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # assemble "Boltzmann B-field drift freq" using four "kernels"
@@ -1778,8 +1776,9 @@ class BounceAvgESPerp(object):
                 # In omega_Upsilon, need sign(q) for ALL bare J_1 functions b/c
                 # k_perp norm uses abs(Omega_cs).
                 # Omit for J0, J2, Jarg*J1 (even functions of k_perp).
-                om_bkg[:]   = v_bkg   * kv / self.r_r0
-                om_drift[:] = v_drift * kv / self.r_r0
+                # Need charge sign factor to work with k normalization.
+                om_bkg[:]   = v_bkg   * kv / self.r_r0 * np.sign(sp.q)
+                om_drift[:] = v_drift * kv / self.r_r0 * np.sign(sp.q)
 
                 om_ups1[:] =         J1_J0[ii,0,0,:,:,np.newaxis] * om_ups1_kernel * np.sign(sp.q)
                 # Use Taylor expansion of J_1(..) because J_1 / v_\perp
@@ -1901,12 +1900,13 @@ class BounceAvgESPerp(object):
                 v_bkg           = v_bkg,
                 v_drift         = v_drift,
                 r_r0            = self.r_r0,
+                # for resolving sign of omega_drift, omega_bkg
+                sp_q            = sp.q,
                 # TODO omega_Upsilon calculation will need the following...
                 #om_ups1_kernel,
                 #om_ups2_kernel,
                 #om_ups3_kernel,
                 #om_ups4_kernel,
-                #sp.q
             )
 
             mom += result
@@ -1943,8 +1943,9 @@ class BounceAvgESPerp(object):
             # so these are really "kernels" instead of frequencies.
             # The (r/r0) factors account for kperp changing along fluxtube,
             # with r = cylindrical radius, azimuthal mode number held constant
-            ωD = v_drift / self.r_r0
-            ωbkg = v_bkg / self.r_r0
+            # Need charge sign factor to work with k normalization.
+            ωD = v_drift / self.r_r0 * np.sign(sp.q)
+            ωbkg = v_bkg / self.r_r0 * np.sign(sp.q)
 
             # Construct all the bounce averages
             inv_Teff_BA       =           _bavgwt( 1. )
@@ -2040,6 +2041,8 @@ class BounceAvgESPerp(object):
             v_bkg,      # shape (vperp,vprll,s)
             v_drift,    # shape (vperp,vprll,s)
             r_r0,       # shape (vperp,vprll,s)
+            # for resolving sign of omega_drift, omega_bkg
+            sp_q,       # scalar, species charge
     ):
         """Pure numpy broadcasting, no numba or MPI"""
 
@@ -2074,8 +2077,9 @@ class BounceAvgESPerp(object):
             kv  = k_vec[ii]
 
             # r/r0 accounts for k_perp varying along field line
-            om_bkg[:]          = v_bkg   * kv * inv_r_r0  # (vperp,vprll,s)
-            om_drift[:]        = v_drift * kv * inv_r_r0
+            # Need charge sign factor to work with k normalization.
+            om_bkg[:]          = v_bkg   * kv * inv_r_r0 * np.sign(sp_q)  # (vperp,vprll,s)
+            om_drift[:]        = v_drift * kv * inv_r_r0 * np.sign(sp_q)
             minus_J0sq_Teff[:] = -1 * J0sq[ii,0,0,:,:,np.newaxis] * inv_Teff
 
             _t0b = time.perf_counter()
