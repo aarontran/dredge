@@ -172,6 +172,7 @@ def interchange(ion_method='loop6d', proc_layout=(1,1,1)):
         Teff_ceiling = 1e5 * ERG_PER_EV,  # 100 keV
         method = ion_method,
         enable_Upsilon = False,
+        expand_order = 1,
     )
 
     chi_e = calc_e.chi_GK(
@@ -180,6 +181,7 @@ def interchange(ion_method='loop6d', proc_layout=(1,1,1)):
         Gforce = 0,
         Teff_ceiling = 1e5 * ERG_PER_EV,  # 100 keV
         method = 'expand',
+        expand_order = 1,
     )
 
     # dispersion relation computed on 3D grid of (k,Re(omega),Im(omega))

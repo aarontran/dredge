@@ -1476,7 +1476,7 @@ class BounceAvgESPerp(object):
         )
 
     def chi_GK(self, epsilonN, ns, Gforce, Teff_ceiling=None, method='expand',
-               enable_Upsilon=False):
+               enable_Upsilon=False, expand_order=1):
         """
         Compute gyro-averaged, GK-ordered susceptibility for exactly
         perpendicular electrostatic waves
@@ -1516,6 +1516,10 @@ class BounceAvgESPerp(object):
 
             enable_Upsilon = enable experimental new drift term?
                              WARNING not fully implemented, may not work!!
+
+            expand_order = highest order in (ωD/ω) to use with method='expand',
+                no effect for other computation methods
+
         Return:
             susceptibility chi on 3D grid of [k, Re(ω), Im(ω)]
         """
@@ -1925,29 +1929,34 @@ class BounceAvgESPerp(object):
             J0sq = J0**2
             del vperp_vth
 
-            # bounce-average reduces (vperp,vprll) -> (vperp,vprll,s)
-            # then extend (vperp,vprll) -> (k,Re(ω),Im(ω),vperp,vprll)
-            inv_Teff_BA = self.bounce_average_njit( inv_Teff )
-            inv_Teff_BA = inv_Teff_BA[np.newaxis,np.newaxis,np.newaxis,:,:]
+            # bounce-average transforms array shape
+            # (vperp,vprll,s) -> (vperp,vprll) -> (k,Re(ω),Im(ω),vperp,vprll)
+            # need 1/Teff(s) weighting factor when background F0 is non-Maxwellian
+            def _bavgwt(x):
+                """Input: x = shape (vperp,vprll,s)"""
+                return (
+                    self.bounce_average_njit( inv_Teff * x )
+                    [np.newaxis,np.newaxis,np.newaxis,:,:]
+                )
 
-            # bounce-average integrand needs 1/Teff(s) factor
-            # when background F0 is non-Maxwellian
-
+            # Separate out the spatial dependence of k,
+            # so these are really "kernels" instead of frequencies.
             # The (r/r0) factors account for kperp changing along fluxtube,
             # with r = cylindrical radius, azimuthal mode number held constant
+            ωD = v_drift / self.r_r0
+            ωbkg = v_bkg / self.r_r0
 
-            ωD_Teff_BA = kk5d * (
-                    self.bounce_average_njit( v_drift * inv_Teff / self.r_r0 )
-                    [np.newaxis,np.newaxis,np.newaxis,:,:]
-            )
-            ωbkg_Teff_BA = kk5d * (
-                    self.bounce_average_njit( v_bkg * inv_Teff / self.r_r0 )
-                    [np.newaxis,np.newaxis,np.newaxis,:,:]
-            )
-            ωDωbkg_Teff_BA = kk5d**2 * (
-                    self.bounce_average_njit( v_drift * v_bkg * inv_Teff / self.r_r0**2 )
-                    [np.newaxis,np.newaxis,np.newaxis,:,:]
-            )
+            # Construct all the bounce averages
+            inv_Teff_BA       =           _bavgwt( 1. )
+            ωD_Teff_BA        = kk5d    * _bavgwt( ωD )
+            ωDωD_Teff_BA      = kk5d**2 * _bavgwt( ωD**2 )
+            ωDωDωD_Teff_BA    = kk5d**3 * _bavgwt( ωD**3 )
+            ωDωDωDωD_Teff_BA  = kk5d**4 * _bavgwt( ωD**4 )
+            ωbkg_Teff_BA         = kk5d**1 * _bavgwt(         ωbkg )
+            ωDωbkg_Teff_BA       = kk5d**2 * _bavgwt( ωD    * ωbkg )
+            ωDωDωbkg_Teff_BA     = kk5d**3 * _bavgwt( ωD**2 * ωbkg )
+            ωDωDωDωbkg_Teff_BA   = kk5d**4 * _bavgwt( ωD**3 * ωbkg )
+            ωDωDωDωDωbkg_Teff_BA = kk5d**5 * _bavgwt( ωD**4 * ωbkg )
 
             # Construct Upsilon drift bounce average terms,
             # being careful/crafty to avoid slamming memory with 4D arrays
@@ -1977,33 +1986,29 @@ class BounceAvgESPerp(object):
             #ωups_Teff_BA = (   ωups1_Teff_BA  + ωups2_Teff_BA + ωups3a_Teff_BA
             #                 + ωups3b_Teff_BA + ωups4_Teff_BA )
 
-            # TODO implement same for the cross term
-            # which would replace ωDωbkg_Teff_BA
-            # but this becomes terribly ugly --ATr,2026mar10
-
             invoo = 1./oo  # 3D array use outside VDF integral
 
             mom = np.zeros((self.k_vec.size,
                             self.omega_re_vec.size,
                             self.omega_im_vec.size), dtype=np.complex128)
 
-            mom += sp.moment( (1.-J0sq) *    inv_Teff_BA  )
-            mom += sp.moment( J0sq      *   ωbkg_Teff_BA  ) * invoo
-            mom += sp.moment( J0sq      *  (- ωD_Teff_BA) ) * invoo
-            mom += sp.moment( J0sq      * ωDωbkg_Teff_BA  ) * invoo**2
-
-            # DROP the higher-order terms in (omega_d/omega)
-            # which would also need to be explicitly bounce averaged
-            #mom += sp.moment( 1./Teff * J0sq * (-omega_d**2)             ) * invoo**2
-            #mom += sp.moment( 1./Teff * J0sq *   omega_d**2 * omega_star ) * invoo**3
-            #mom += sp.moment( 1./Teff * J0sq * (-omega_d**3)             ) * invoo**3
-            #mom += sp.moment( 1./Teff * J0sq *   omega_d**3 * omega_star ) * invoo**4
-            #mom += sp.moment( 1./Teff * J0sq * (-omega_d**4)             ) * invoo**4
-            #mom += sp.moment( 1./Teff * J0sq *   omega_d**4 * omega_star ) * invoo**5
-            #mom += sp.moment( 1./Teff * J0sq * (-omega_d**5)             ) * invoo**5
-            #mom += sp.moment( 1./Teff * J0sq *   omega_d**5 * omega_star ) * invoo**6
-            #mom += sp.moment( 1./Teff * J0sq * (-omega_d**6)             ) * invoo**6
-            #mom += sp.moment( 1./Teff * J0sq *   omega_d**6 * omega_star ) * invoo**7
+            if expand_order >= 0:
+                mom += sp.moment( (1.-J0sq) *    inv_Teff_BA         )
+                mom += sp.moment( J0sq      *   ωbkg_Teff_BA         ) * invoo
+            if expand_order >= 1:
+                mom += sp.moment( J0sq      * (-ωD_Teff_BA)          ) * invoo
+                mom += sp.moment( J0sq      *   ωDωbkg_Teff_BA       ) * invoo**2
+            if expand_order >= 2:
+                mom += sp.moment( J0sq      * (-ωDωD_Teff_BA)        ) * invoo**2
+                mom += sp.moment( J0sq      *   ωDωDωbkg_Teff_BA     ) * invoo**3
+            if expand_order >= 3:
+                mom += sp.moment( J0sq      * (-ωDωDωD_Teff_BA)      ) * invoo**3
+                mom += sp.moment( J0sq      *   ωDωDωDωbkg_Teff_BA   ) * invoo**4
+            if expand_order >= 4:
+                mom += sp.moment( J0sq      * (-ωDωDωDωD_Teff_BA)    ) * invoo**4
+                mom += sp.moment( J0sq      *   ωDωDωDωDωbkg_Teff_BA ) * invoo**5
+            if expand_order >= 5:
+                raise NotImplementedError("Resonant denominator expansion to order (ωD/ω)^5 is not implemented")
 
             # DEBUGGING - gravity drift only, so both omega_star and omega_d
             # are independent of velocity space, and we can break the factor
