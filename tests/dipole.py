@@ -19,7 +19,7 @@ def test_dipole_bounce_average():
     # Define the magnetic geometry
 
     req = 50
-    field = dr.field.FieldLineDipoleFarField(
+    field = dr.field.DipoleFieldLine(
             I=1e17, r0=1, req=req,
             ds=0.2, n_steps=int(200*req/30),
             axis_r = 1, axis_z = 2,

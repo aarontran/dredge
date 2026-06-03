@@ -37,7 +37,7 @@ def main():
     # is seen by particles
     ns_resolution = 10  # number of sample points for bounce-average integral
 
-    field = dr.field.FieldLineParabolic(
+    field = dr.field.ParabolicFieldLine(
         B0      = B0,       # central magnetic field strength (Gauss)
         Bt      = BT,       # throat magnetic field strength (Gauss)
         Lp      = LP,       # z position (cm) of magnetic throat

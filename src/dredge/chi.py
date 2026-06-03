@@ -15,7 +15,7 @@ from scipy.interpolate import RegularGridInterpolator
 
 from .special import Zfunc
 from .species import Species, KineticVDFGrid
-from .field import FieldLineVec
+from .field import VecFieldLine
 from .const import CLIGHT
 from .bavg import _bounce_average_njit_kernel
 from .util import print0, printn
@@ -1022,7 +1022,7 @@ class BounceAvgESPerp(object):
     def __init__(self,
                  grid: WaveGrid,
                  species: KineticVDFGrid,
-                 field: FieldLineVec,
+                 field: VecFieldLine,
     ):
         """
         Susceptibility for perpendicular electrostatic waves in a paraxial
@@ -1047,13 +1047,13 @@ class BounceAvgESPerp(object):
             grid = dredge.chi.WaveGrid(...) instance
             species = dredge.species.KineticVDFGrid(...) instance
                       sampled at field-line-following coordinate s = 0
-            field = dredge.field.FieldLineVec(...) instance
+            field = dredge.field.VecFieldLine(...) instance
         """
         self.grid = grid
         self.species = species
         self.field = field
         assert isinstance(species, KineticVDFGrid)
-        assert isinstance(field, FieldLineVec)
+        assert isinstance(field, VecFieldLine)
 
         # midplane magnetic field for \Omega_{cs} and other normalizations
         self.B0 = field.query_Bmag_at([0.])

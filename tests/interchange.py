@@ -45,7 +45,7 @@ def interchange(ion_method='loop6d', proc_layout=(1,1,1)):
     n_steps = 20
     ns_resolution = 10  # number of sample points for bounce-average integral
 
-    field = dr.field.FieldLineParabolic(B0=B0, Bt=BT, Lp=LP, r0=r0, z0=z0,
+    field = dr.field.ParabolicFieldLine(B0=B0, Bt=BT, Lp=LP, r0=r0, z0=z0,
                                         ds=ds, n_steps=n_steps,
                                         axis_r=1, axis_z=2)
 

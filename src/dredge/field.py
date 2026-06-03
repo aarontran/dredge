@@ -119,7 +119,7 @@ class FieldLine(object):
         pass
 
 
-class FieldLineConst(FieldLine):
+class ConstFieldLine(FieldLine):
     """
     Axisymmetric CONSTANT magnetic field line in cylindrical geometry
     """
@@ -157,7 +157,7 @@ class FieldLineConst(FieldLine):
         return np.zeros_like(B_points)
 
 
-class FieldLineVec(FieldLine):
+class VecFieldLine(FieldLine):
     """
     Axisymmetric magnetic field line in cylindrical geometry
     """
@@ -316,7 +316,7 @@ class FieldLineVec(FieldLine):
         return self.s_interp(points)
 
 
-class FieldLineParabolic(FieldLineVec):
+class ParabolicFieldLine(VecFieldLine):
     """
     Axisymmetric magnetic field with parabolic (r,z) dependence and curl(B)=0
     in cylindrical geometry, which provides a simple analytic approximation to
@@ -470,7 +470,7 @@ class FieldLineParabolic(FieldLineVec):
         return (r,z)
 
 
-class FieldLineDipoleFarField(FieldLineVec):
+class DipoleFieldLine(VecFieldLine):
     """
     Axisymmetric dipole magnetic field, far-field limit,
     using Equations (2.13a-d) of Mishchenko et al. (2018, JPP).
@@ -569,7 +569,7 @@ class FieldLineDipoleFarField(FieldLineVec):
             two-tuple (r,z) of radius and axial coordinates tracing a magnetic
             field line; r and z are each a 1D numpy.ndarray of shape (n_steps,)
         """
-        # TODO refactor the field-line tracing methods out of FieldLineVec
+        # TODO refactor the field-line tracing methods out of VecFieldLine
         # subclasses --ATr,2025nov15
         r = np.empty(n_steps, dtype=np.float64)
         z = np.empty(n_steps, dtype=np.float64)
@@ -594,7 +594,7 @@ class FieldLineDipoleFarField(FieldLineVec):
         return r, z
 
 
-class FieldLineFromPleiadesHDF5(FieldLineVec):
+class PleiadesFieldLine(VecFieldLine):
     """
     Axisymmetric magnetic field line from HDF5 file output by Pleiades code.
     Field line is traced from (r0, z0) along +z direction.
@@ -614,7 +614,7 @@ class FieldLineFromPleiadesHDF5(FieldLineVec):
         Axisymmetric magnetic field line from HDF5 file output by Pleiades code.
         Field line is traced from (r0, z0) along +z direction.
 
-        WARNING: base class FieldLineVec requires |B| to be monotonic along the
+        WARNING: base class VecFieldLine requires |B| to be monotonic along the
         traced field line.  For a mirror machine this holds from the midplane
         (z=0) to the first mirror throat, but NOT necessarily over the full
         z range.  Choose n_steps * ds to stay within the monotonic segment.
@@ -719,7 +719,7 @@ class FieldLineFromPleiadesHDF5(FieldLineVec):
         # Claude's advice: .ravel() and .reshape(...) idiom for
         # interpolator-backed functions preserves numpy's scalar broadcasting
         # contract, matching how pure-math implementations like
-        # FieldLineDipoleFarField behave automatically.
+        # DipoleFieldLine behave automatically.
         r, z = np.asarray(r), np.asarray(z)
         pts = np.column_stack([r.ravel(), z.ravel()])
         return self._BR_interp(pts).reshape(r.shape)
@@ -754,7 +754,7 @@ class FieldLineFromPleiadesHDF5(FieldLineVec):
             two-tuple (r,z) of radius and axial coordinates tracing a magnetic
             field line; r and z are each a 1D numpy.ndarray of shape (n_steps,)
         """
-        # TODO refactor the field-line tracing methods out of FieldLineVec
+        # TODO refactor the field-line tracing methods out of VecFieldLine
         # subclasses --ATr,2025nov15
         r = np.empty(n_steps, dtype=np.float64)
         z = np.empty(n_steps, dtype=np.float64)
