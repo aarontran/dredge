@@ -5,7 +5,10 @@ Total density is not yet specified; it enters via susceptibility calculation.
 
 import numpy as np
 
+from scipy.interpolate import RegularGridInterpolator
+
 from .const import CLIGHT
+from . import vdf
 
 
 class Species(object):
@@ -103,6 +106,17 @@ class Maxwellian(Species):
         self.Tperp = T
         self.Tprll = T
 
+    def df_at(self, vperp, vprll):
+        r"""
+        Evaluate the normalized distribution f0(vperp,vprll) at arbitrary
+        velocities, broadcasting over input numpy array shapes.
+        Inputs:
+            vperp in cm/s
+            vprll in cm/s
+        Returns f0 in (cm/s)^(-3), normalized so \int f0 d^3v = 1.
+        """
+        return vdf.bimaxwellian(vperp, vprll, self.vth_perp, self.vth_prll)
+
 
 class BiMaxwellian(Species):
     """
@@ -122,6 +136,17 @@ class BiMaxwellian(Species):
         super().__init__(mass, charge)
         self.Tperp = Tperp
         self.Tprll = Tprll
+
+    def df_at(self, vperp, vprll):
+        r"""
+        Evaluate the normalized distribution f0(vperp,vprll) at arbitrary
+        velocities, broadcasting over input numpy array shapes.
+        Inputs:
+            vperp in cm/s
+            vprll in cm/s
+        Returns f0 in (cm/s)^(-3), normalized so \int f0 d^3v = 1.
+        """
+        return vdf.bimaxwellian(vperp, vprll, self.vth_perp, self.vth_prll)
 
 
 class KineticPerpVDFGrid(Species):
@@ -194,10 +219,14 @@ class KineticVDFGrid(Species):
         assert vprll_vec.ndim == 1
         assert df.shape == (vperp_vec.size, vprll_vec.size)
 
-        self.vperp_vec = vperp_vec
-        self.vprll_vec = vprll_vec
+        self.vperp_vec = np.asarray(vperp_vec)
+        self.vprll_vec = np.asarray(vprll_vec)
         self.df = df
-        self.df = self.df / self.moment(1.)
+        # zeroth velocity moment of df AS SUPPLIED (its velocity-space integral);
+        # retained so callers can recover the density of an unnormalized input
+        # df.  Equals 1 after the normalization on the next line.
+        self.norm = self.moment(1.)
+        self.df = self.df / self.norm
         self.df_reduced = np.trapezoid(self.df, self.vprll_vec, axis=1)
 
         self.Tperp = self.mass * self.moment( 0.5*(self.vperp_vec**2)[:,np.newaxis] )
@@ -279,6 +308,33 @@ class KineticVDFGrid(Species):
     # TODO write template methods / extensions for
     # other distribution functions to help with code testing and structure
     # --ATr,2026mar08
+
+    def df_at(self, vperp, vprll):
+        r"""
+        Evaluate the normalized distribution f0(vperp,vprll) at arbitrary
+        velocities, broadcasting over input numpy array shapes,
+        using 2D linear interpolation of the stored grid.
+
+        Points outside the stored (vperp_vec, vprll_vec) grid return 0; this is
+        intended for tail values beyond the grid where f0 is negligible.
+
+        Inputs:
+            vperp in cm/s
+            vprll in cm/s
+        Returns f0 in (cm/s)^(-3), normalized so \int f0 d^3v = 1.
+        """
+        # build the interpolator once and cache it; self.df is fixed after init
+        if not hasattr(self, '_df_interp'):
+            self._df_interp = RegularGridInterpolator(
+                (self.vperp_vec, self.vprll_vec), self.df,
+                bounds_error=False, fill_value=0.,
+            )
+        # broadcast_arrays raises clearly on incompatible shapes, and prevents
+        # silent mispairing when shapes have equal size but differ (e.g. (2,3)
+        # vs (3,2)) since ravel/reshape alone would not catch that
+        vperp, vprll = np.broadcast_arrays(np.asarray(vperp), np.asarray(vprll))
+        pts = np.column_stack([vperp.ravel(), vprll.ravel()])
+        return self._df_interp(pts).reshape(vperp.shape)
 
     def compute_dF0_dEperp(self):
         """
