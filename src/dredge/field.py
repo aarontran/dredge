@@ -329,7 +329,7 @@ class FieldLineParabolic(FieldLineVec):
                  r0: float,
                  z0: float,
                  ds: float,
-                 n_steps: float,
+                 n_steps: int,
                  axis_r = 1,
                  axis_z = 2,
                  ):
@@ -372,7 +372,7 @@ class FieldLineParabolic(FieldLineVec):
         # TODO if we implement more analytic functions, we may want to refactor
         # out the general code framework for converting analytic functions to
         # discrete data --ATr,2025nov15
-        r_pos, z_pos = self.trace_field_line(r0, z0, ds=ds, n_steps=n_steps)
+        r_pos, z_pos = self._trace_field_line(r0, z0, ds=ds, n_steps=n_steps)
 
         Bvec     = np.zeros((3,r_pos.size), dtype=r_pos.dtype)
         gradBmag = np.zeros((3,r_pos.size), dtype=r_pos.dtype)
@@ -436,7 +436,7 @@ class FieldLineParabolic(FieldLineVec):
         argsq = d**2 * (r/Lp)**2 * (z/Lp)**2 + Bzmag**2
         return num / (2 * np.sqrt(argsq))
 
-    def trace_field_line(self, r0, z0, ds=1., n_steps=10):
+    def _trace_field_line(self, r0, z0, ds=1., n_steps=10):
         """
         Trace magnetic field line using forward-Euler method, starting from
         some initial (r0,z0) position.
@@ -507,10 +507,7 @@ class FieldLineDipoleFarField(FieldLineVec):
         self.req = req
         self.psi = self.M / self.req  # flux function at equatorial plane, identifies field line
 
-        # TODO if we implement more analytic functions, we may want to refactor
-        # out the general code framework for converting analytic functions to
-        # discrete data --ATr,2025nov15
-        r_pos, z_pos = self.trace_field_line(req, 0, ds=ds, n_steps=n_steps)
+        r_pos, z_pos = self._trace_field_line(req, 0, ds=ds, n_steps=n_steps)
 
         Bvec     = np.zeros((3,r_pos.size), dtype=r_pos.dtype)
         gradBmag = np.zeros((3,r_pos.size), dtype=r_pos.dtype)
@@ -524,14 +521,14 @@ class FieldLineDipoleFarField(FieldLineVec):
         gradBmag[axis_z] = self.dBmag_dz_func(r_pos, z_pos)
 
         super().__init__(
-            Bx = Bvec[0],
-            By = Bvec[1],
-            Bz = Bvec[2],
+            Bx        = Bvec[0],
+            By        = Bvec[1],
+            Bz        = Bvec[2],
             gradBmagx = gradBmag[0],
             gradBmagy = gradBmag[1],
             gradBmagz = gradBmag[2],
-            r_pos = r_pos,
-            z_pos = z_pos,
+            r_pos     = r_pos,
+            z_pos     = z_pos,
         )
 
     def Br_func(self, r, z):
@@ -560,10 +557,9 @@ class FieldLineDipoleFarField(FieldLineVec):
         #   Simplify[D[modB[r, z], z]]
         return -12 * abs(self.M) * z**3 / (r**2 + z**2)**3 / np.sqrt(4*z**2 + r**2)
 
-    def trace_field_line(self, r0, z0, ds=1., n_steps=10):
+    def _trace_field_line(self, r0, z0, ds, n_steps):
         """
-        Trace magnetic field line using RK4 method, starting from
-        some initial (r0,z0) position.
+        Trace field line using RK4 method starting from (r0,z0) position.
         Args:
             r0: starting radius in cm
             z0: starting axial coordinate in cm
@@ -573,33 +569,211 @@ class FieldLineDipoleFarField(FieldLineVec):
             two-tuple (r,z) of radius and axial coordinates tracing a magnetic
             field line; r and z are each a 1D numpy.ndarray of shape (n_steps,)
         """
-        # TODO if we implement more analytic functions, we may want to refactor
-        # out the field-line tracing methods --ATr,2025nov15
+        # TODO refactor the field-line tracing methods out of FieldLineVec
+        # subclasses --ATr,2025nov15
         r = np.empty(n_steps, dtype=np.float64)
         z = np.empty(n_steps, dtype=np.float64)
         r[0] = r0
         z[0] = z0
 
-        def veloc(r, z):
-            """effective velocity for vector field tracing"""
-            Br = self.Br_func(r, z)
-            Bz = self.Bz_func(r, z)
-            Bmag = (Br**2 + Bz**2)**0.5
-            vr = Br/Bmag
-            vz = Bz/Bmag
-            return vr, vz
+        def veloc(ri, zi):
+            Br = self.Br_func(ri, zi)
+            Bz = self.Bz_func(ri, zi)
+            Bmag = np.sqrt(Br**2 + Bz**2)
+            return Br / Bmag, Bz / Bmag
 
         for ii in range(1, n_steps):
-            # 4th-order Runge-Kutta method for tracing field line
-            k1r, k1z = veloc(r[ii-1],
-                             z[ii-1])
-            k2r, k2z = veloc(r[ii-1] + 0.5*ds*k1r,
-                             z[ii-1] + 0.5*ds*k1z)
-            k3r, k3z = veloc(r[ii-1] + 0.5*ds*k2r,
-                             z[ii-1] + 0.5*ds*k2z)
-            k4r, k4z = veloc(r[ii-1] + ds*k3r,
-                             z[ii-1] + ds*k3z)
+            # 4th-order Runge-Kutta method
+            k1r, k1z = veloc(r[ii-1],              z[ii-1])
+            k2r, k2z = veloc(r[ii-1] + 0.5*ds*k1r, z[ii-1] + 0.5*ds*k1z)
+            k3r, k3z = veloc(r[ii-1] + 0.5*ds*k2r, z[ii-1] + 0.5*ds*k2z)
+            k4r, k4z = veloc(r[ii-1] +     ds*k3r, z[ii-1] +     ds*k3z)
             r[ii] = r[ii-1] + (ds/6.) * (k1r + 2*k2r + 2*k3r + k4r)
             z[ii] = z[ii-1] + (ds/6.) * (k1z + 2*k2z + 2*k3z + k4z)
 
-        return (r,z)
+        return r, z
+
+
+class FieldLineFromPleiadesHDF5(FieldLineVec):
+    """
+    Axisymmetric magnetic field line from HDF5 file output by Pleiades code.
+    Field line is traced from (r0, z0) along +z direction.
+    """
+
+    def __init__(self,
+                 path: str,
+                 r0: float,
+                 z0: float = 0.,
+                 ds: float = 0.5,
+                 n_steps: int = 200,
+                 axis_r: int = 1,
+                 axis_z: int = 2,
+                 field_group: str = 'VacuumFields',
+                 ):
+        r"""
+        Axisymmetric magnetic field line from HDF5 file output by Pleiades code.
+        Field line is traced from (r0, z0) along +z direction.
+
+        WARNING: base class FieldLineVec requires |B| to be monotonic along the
+        traced field line.  For a mirror machine this holds from the midplane
+        (z=0) to the first mirror throat, but NOT necessarily over the full
+        z range.  Choose n_steps * ds to stay within the monotonic segment.
+        Verify after construction: assert np.all(np.diff(field.Bmag) > 0.)
+
+        Expected HDF5 layout:
+            Mesh/R            shape (n_z, n_r)  — r-coordinates, meters
+            Mesh/Z            shape (n_z, n_r)  — z-coordinates, meters
+            VacuumFields/B    shape (n_z, n_r)  — |B| magnitude, Tesla
+            VacuumFields/BR   shape (n_z, n_r)  — B_r component, Tesla
+            VacuumFields/BZ   shape (n_z, n_r)  — B_z component, Tesla
+
+        User may also request 'Equilibrium' fields, which sum both vacuum and
+        plasma diamagnetic fields; the HDF5 layout for Equilibrium/{B,B,BZ}
+        should match that of VacuumFields.
+
+        Inputs:
+            path:    path to HDF5 file
+            r0:      starting radius in cm (CGS)
+            z0:      starting axial position in cm (CGS); default 0 (midplane)
+            ds:      RK4 arc-length step size in cm (CGS)
+            n_steps: number of RK4 steps to trace
+            axis_r:  which Cartesian (x,y,z) index maps to cylindrical r
+            axis_z:  which Cartesian (x,y,z) index maps to cylindrical z
+            field_group: 'VacuumFields' or 'Equilibrium', corresponding to
+                         the desired HDF5 group in Pleiades output file
+        """
+        import h5py
+
+        # Pleiades HDF5 files before ~2026 May used 'Equil' rather than
+        # 'Equilibrium'
+        assert field_group in ['VacuumFields', 'Equilibrium']
+
+        with h5py.File(path, 'r') as f:
+            R  = f['Mesh/R'][...]
+            Z  = f['Mesh/Z'][...]
+            B  = f[f'{field_group:s}/B'][...]  # shape (n_z, n_r)
+            BR = f[f'{field_group:s}/BR'][...]
+            BZ = f[f'{field_group:s}/BZ'][...]
+
+        # transpose (Z,R) to (R,Z) and convert SI to CGS units immediately
+        # to match dredge code convention
+        R = R.T * 100  # meters -> cm
+        Z = Z.T * 100
+        B = B.T * 1e4  # Tesla -> Gauss
+        BR = BR.T * 1e4
+        BZ = BZ.T * 1e4
+
+        # extract 1D grid vectors from the 2D coordinate arrays
+        R_vec = R[:, 0]   # shape (n_r,)
+        Z_vec = Z[0, :]   # shape (n_z,)
+        assert np.all(R == R_vec[:,np.newaxis]), "mesh must be rectilinear"
+        assert np.all(Z == Z_vec[np.newaxis,:]), "mesh must be rectilinear"
+
+        # Enforce axisymmetry boundary condition Br(r=0) = 0.
+        # Pleiades output fills the r=0 column by copying the r=Δr column rather
+        # than imposing symmetry.  For Bz, |B| (even in r) this copy is harmless
+        # to O(Δr^2), but for Br (odd in r) a nonzero on-axis value gives a
+        # spurious *constant* inward Br across the first radial cell, which
+        # drags near-axis traced field lines into r=0.  See git history /
+        # diagnosis for wham-r_field.h5.  --ATr,2026jun
+        if R_vec[0] == 0.:
+            BR[0, :] = 0.
+
+        # evaluate gradients on user-input mesh, and interpolate gradients,
+        # instead of taking gradients of interpolated B values
+        dBdR_2d, dBdZ_2d = np.gradient(B, R_vec, Z_vec)
+
+        # setup for field line tracing
+        interp_kws = dict(bounds_error=True)
+        self._BR_interp = RegularGridInterpolator((R_vec, Z_vec), BR, **interp_kws)
+        self._BZ_interp = RegularGridInterpolator((R_vec, Z_vec), BZ, **interp_kws)
+        self._dBdR_interp = RegularGridInterpolator((R_vec, Z_vec), dBdR_2d, **interp_kws)
+        self._dBdZ_interp = RegularGridInterpolator((R_vec, Z_vec), dBdZ_2d, **interp_kws)
+
+        r_pos, z_pos = self._trace_field_line(r0, z0, ds, n_steps)
+
+        Bvec     = np.zeros((3,r_pos.size), dtype=r_pos.dtype)
+        gradBmag = np.zeros((3,r_pos.size), dtype=r_pos.dtype)
+
+        assert axis_r != axis_z
+        assert axis_r in [0,1,2]
+        assert axis_z in [0,1,2]
+        Bvec[axis_r]     = self.Br_func      (r_pos, z_pos)
+        Bvec[axis_z]     = self.Bz_func      (r_pos, z_pos)
+        gradBmag[axis_r] = self.dBmag_dr_func(r_pos, z_pos)
+        gradBmag[axis_z] = self.dBmag_dz_func(r_pos, z_pos)
+
+        super().__init__(
+            Bx        = Bvec[0],
+            By        = Bvec[1],
+            Bz        = Bvec[2],
+            gradBmagx = gradBmag[0],
+            gradBmagy = gradBmag[1],
+            gradBmagz = gradBmag[2],
+            r_pos     = r_pos,
+            z_pos     = z_pos,
+        )
+
+    def Br_func(self, r, z):
+        """Compute B_r component at cylindrical (r,z) in cm"""
+        # Claude's advice: .ravel() and .reshape(...) idiom for
+        # interpolator-backed functions preserves numpy's scalar broadcasting
+        # contract, matching how pure-math implementations like
+        # FieldLineDipoleFarField behave automatically.
+        r, z = np.asarray(r), np.asarray(z)
+        pts = np.column_stack([r.ravel(), z.ravel()])
+        return self._BR_interp(pts).reshape(r.shape)
+
+    def Bz_func(self, r, z):
+        """Compute B_z component at cylindrical (r,z) in cm"""
+        r, z = np.asarray(r), np.asarray(z)
+        pts = np.column_stack([r.ravel(), z.ravel()])
+        return self._BZ_interp(pts).reshape(r.shape)
+
+    def dBmag_dr_func(self, r, z):
+        """Compute d|B|/dr at cylindrical (r,z) in cm"""
+        r, z = np.asarray(r), np.asarray(z)
+        pts = np.column_stack([r.ravel(), z.ravel()])
+        return self._dBdR_interp(pts).reshape(r.shape)
+
+    def dBmag_dz_func(self, r, z):
+        """Compute d|B|/dz at cylindrical (r,z) in cm"""
+        r, z = np.asarray(r), np.asarray(z)
+        pts = np.column_stack([r.ravel(), z.ravel()])
+        return self._dBdZ_interp(pts).reshape(r.shape)
+
+    def _trace_field_line(self, r0, z0, ds, n_steps):
+        """
+        Trace field line using RK4 method starting from (r0,z0) position.
+        Args:
+            r0: starting radius in cm
+            z0: starting axial coordinate in cm
+            ds: arc-length step size in cm
+            n_steps: number of steps to take
+        Return:
+            two-tuple (r,z) of radius and axial coordinates tracing a magnetic
+            field line; r and z are each a 1D numpy.ndarray of shape (n_steps,)
+        """
+        # TODO refactor the field-line tracing methods out of FieldLineVec
+        # subclasses --ATr,2025nov15
+        r = np.empty(n_steps, dtype=np.float64)
+        z = np.empty(n_steps, dtype=np.float64)
+        r[0] = r0
+        z[0] = z0
+
+        def veloc(ri, zi):
+            Br = self.Br_func(ri, zi)
+            Bz = self.Bz_func(ri, zi)
+            Bmag = np.sqrt(Br**2 + Bz**2)
+            return Br / Bmag, Bz / Bmag
+
+        for ii in range(1, n_steps):
+            # 4th-order Runge-Kutta method
+            k1r, k1z = veloc(r[ii-1],              z[ii-1])
+            k2r, k2z = veloc(r[ii-1] + 0.5*ds*k1r, z[ii-1] + 0.5*ds*k1z)
+            k3r, k3z = veloc(r[ii-1] + 0.5*ds*k2r, z[ii-1] + 0.5*ds*k2z)
+            k4r, k4z = veloc(r[ii-1] +     ds*k3r, z[ii-1] +     ds*k3z)
+            r[ii] = r[ii-1] + (ds/6.) * (k1r + 2*k2r + 2*k3r + k4r)
+            z[ii] = z[ii-1] + (ds/6.) * (k1z + 2*k2z + 2*k3z + k4z)
+
+        return r, z

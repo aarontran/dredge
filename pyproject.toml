@@ -7,6 +7,7 @@ name = "dredge"
 version = "26.03"
 dependencies = [
     "numpy>=2",
+    "h5py",
     "pytest",
     "pytest-mpi @ git+https://github.com/aragilar/pytest-mpi.git@4b9aabaf",
 ]
