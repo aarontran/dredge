@@ -9,7 +9,7 @@ def bimaxwellian(vperp, vprll, vthperp, vthprll):
     """
     Bi-Maxwellian distribution, non-relativistic.
     """
-    norm = 1./(np.pi**1.5 * vthperp * vthprll**0.5)
+    norm = 1./(np.pi**1.5 * vthperp**2 * vthprll)
     return norm * np.exp( - (vperp/vthperp)**2 - (vprll/vthprll)**2 )
 
 
