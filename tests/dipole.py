@@ -9,7 +9,7 @@ import pytest
 from mpi4py import MPI
 
 import dredge as dr
-from dredge.const import CLIGHT, ERG_PER_EV, ESU, M_PROTON
+from dredge.const import CLIGHT, ERG_PER_EV, Q_ELEMENTARY, M_PROTON
 
 
 @pytest.mark.mpi_skip
@@ -40,7 +40,7 @@ def test_dipole_bounce_average():
 
     ion = dr.species.KineticVDFGrid(
         mass=M_PROTON,
-        charge=ESU,
+        charge=Q_ELEMENTARY,
         vperp_vec=vperp_vec,
         vprll_vec=vprll_vec,
         df=df,

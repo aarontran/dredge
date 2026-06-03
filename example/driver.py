@@ -5,7 +5,7 @@ import warnings
 
 import dredge as dr
 from dredge.const import (
-    CLIGHT, ERG_PER_EV, ESU, GAUSS_PER_TESLA,
+    CLIGHT, ERG_PER_EV, Q_ELEMENTARY, GAUSS_PER_TESLA,
     M_ELECTRON, M_PROTON,
 )
 
@@ -63,8 +63,8 @@ def main():
     # species mass, charge
     mi = M_PROTON  # ion mass
     me = M_ELECTRON  # electron mass
-    qi = ESU  # ion charge
-    qe = -ESU  # electron charge
+    qi = Q_ELEMENTARY  # ion charge
+    qe = -Q_ELEMENTARY  # electron charge
 
     # inverse density scale length ~ (WHAM Phase 1 plasma radius)^-1 in cm^-1
     # etaN < 0 for coordinate system with dn/dy along y, k along x, B along z
