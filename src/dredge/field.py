@@ -631,6 +631,9 @@ class PleiadesFieldLine(VecFieldLine):
         plasma diamagnetic fields; the HDF5 layout for Equilibrium/{B,B,BZ}
         should match that of VacuumFields.
 
+        Legacy files without 'Mesh' group are auto-detected; these contain 1D
+        R,Z grid vectors and B,B_R,B_Z arrays of shape (n_r,n_z).
+
         Inputs:
             path:    path to HDF5 file
             r0:      starting radius in cm (CGS)
@@ -649,25 +652,32 @@ class PleiadesFieldLine(VecFieldLine):
         assert field_group in ['VacuumFields', 'Equilibrium']
 
         with h5py.File(path, 'r') as f:
-            R  = f['Mesh/R'][...]
-            Z  = f['Mesh/Z'][...]
-            B  = f[f'{field_group:s}/B'][...]  # shape (n_z, n_r)
-            BR = f[f'{field_group:s}/BR'][...]
-            BZ = f[f'{field_group:s}/BZ'][...]
+            # current grouped layout
+            if 'Mesh' in f:
+                R  = f['Mesh/R'][...].T  # (n_z,n_r) -> (n_r,n_z)
+                Z  = f['Mesh/Z'][...].T
+                B  = f[f'{field_group:s}/B'][...].T
+                BR = f[f'{field_group:s}/BR'][...].T
+                BZ = f[f'{field_group:s}/BZ'][...].T
+                R_vec, Z_vec = R[:, 0], Z[0, :]    # 1D grid vectors from 2D mesh
+                assert np.all(R == R_vec[:,np.newaxis]), "mesh must be rectilinear"
+                assert np.all(Z == Z_vec[np.newaxis,:]), "mesh must be rectilinear"
+            # legacy flat layout (B_R/B_Z, 1D R/Z)
+            else:
+                assert not any(isinstance(v, h5py.Group) for v in f.values()), \
+                    "Unrecognized HDF5 layout (expected groupless legacy file)"
+                R_vec = f['R'][...]  # already 1D grid vectors
+                Z_vec = f['Z'][...]
+                B  = f['B'][...]     # already (n_r, n_z)
+                BR = f['B_R'][...]
+                BZ = f['B_Z'][...]
 
-        # transpose (Z,R) to (R,Z) and convert SI to CGS units immediately
-        # to match dredge code convention
-        R = R.T * 100  # meters -> cm
-        Z = Z.T * 100
-        B = B.T * 1e4  # Tesla -> Gauss
-        BR = BR.T * 1e4
-        BZ = BZ.T * 1e4
-
-        # extract 1D grid vectors from the 2D coordinate arrays
-        R_vec = R[:, 0]   # shape (n_r,)
-        Z_vec = Z[0, :]   # shape (n_z,)
-        assert np.all(R == R_vec[:,np.newaxis]), "mesh must be rectilinear"
-        assert np.all(Z == Z_vec[np.newaxis,:]), "mesh must be rectilinear"
+        # both layouts store SI; convert to CGS to match dredge convention
+        R_vec = R_vec * 100  # meters -> cm
+        Z_vec = Z_vec * 100
+        B  = B  * 1e4  # Tesla -> Gauss
+        BR = BR * 1e4
+        BZ = BZ * 1e4
 
         # Enforce axisymmetry boundary condition Br(r=0) = 0.
         # Pleiades output fills the r=0 column by copying the r=Δr column rather
