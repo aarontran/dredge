@@ -227,10 +227,21 @@ class KineticVDFGrid(Species):
         # df.  Equals 1 after the normalization on the next line.
         self.norm = self.moment(1.)
         self.df = self.df / self.norm
-        self.df_reduced = np.trapezoid(self.df, self.vprll_vec, axis=1)
 
         self.Tperp = self.mass * self.moment( 0.5*(self.vperp_vec**2)[:,np.newaxis] )
         self.Tprll = self.mass * self.moment(     (self.vprll_vec**2)[np.newaxis,:] )
+
+    def to_perp_grid(self):
+        r"""
+        Reduce to a KineticPerpVDFGrid by integrating out v_parallel.
+        Returns:
+            KineticPerpVDFGrid with the same mass/charge and reduced
+            distribution df_reduced(vperp) = \int f dv_parallel in (cm/s)^(-2)
+            (re-normalized to unit density on construction).
+        """
+        df_reduced = np.trapezoid(self.df, self.vprll_vec, axis=1)
+        return KineticPerpVDFGrid(self.mass, self.charge, self.vperp_vec,
+                                  df_reduced)
 
     def moment(self, *args, **kwargs):
         return self.moment_bcast_left(*args, **kwargs)
