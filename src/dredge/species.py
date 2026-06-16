@@ -7,7 +7,7 @@ import numpy as np
 
 from scipy.interpolate import RegularGridInterpolator
 
-from .const import CLIGHT
+from .const import CLIGHT, Q_ELEMENTARY
 from . import vdf
 
 
@@ -402,3 +402,153 @@ class KineticVDFGrid(Species):
         else:
             df0_dEprll = df0_dvprll / (self.m * self.vprll_vec[np.newaxis,:])
         return df0_dEprll  # shape (vperp, vprll)
+
+
+class CQL3DVDFGrid(KineticVDFGrid):
+    """
+    Particle species whose velocity distribution is loaded from a CQL3D
+    (Fokker-Planck solver) NetCDF output file.
+    """
+
+    def __init__(self, path, radial_index=0, species_index=0,
+                 vperp_vec=None, vprll_vec=None, nv=300, vmax_floor=1e-10,
+                 floor=1e-99):
+        r"""
+        Load CQL3D (Fokker-Planck solver) NetCDF output file distribution into
+        a KineticVDFGrid, for user's choice of species and radial coordinate.
+
+        WARNING: dredge is a non-relativistic code.  CQL3D momentum-per-mass
+        grid is converted to 3-velocity v = u / gamma.  Distribution function
+        values are unchanged; i.e., Lorentz gamma factors in d^3(u) -> d^3(v)
+        are implicitly taken equal to one.
+
+        Inputs:
+            path = path to CQL3D NetCDF output file
+            radial_index = index of the CQL3D radial flux surface to load,
+                           0-based; see the file's `rya` normalized-radius mesh
+            species_index = index of the general (FP-solved) species to load,
+                            0-based in [0, ngen) (e.g. D=0, e=1 in a 2-species run)
+            vperp_vec = optional 1D perpendicular-velocity grid in cm/s;
+                        default is linspace(0, vmax, nv) with vmax
+                        automatically chosen to capture only region wherein f
+                        is non-negligible (see vmax_floor)
+            vprll_vec = optional 1D parallel-velocity grid in cm/s;
+                        default is linspace(-vmax, vmax, 2*nv+1)
+            nv = resolution used to build the default velocity grids
+            vmax_floor = sets the default grid extent vmax to the farthest speed
+                         where the distribution f (taken at its best pitch angle)
+                         still exceeds this fraction of its peak value.
+                         CQL3D grid runs out to v ~ c, but f may fall sharply
+                         at smaller v, so automatic vmax choice avoids wasting
+                         resolution on empty distribution tail.
+            floor = minimum distribution value, replacing zeros from the polar
+                    grid's finite support (CGS units, (cm/s)^(-3))
+        """
+        from scipy.io import netcdf_file
+
+        with netcdf_file(path, 'r', mmap=False) as nc:
+
+            def _read(name):
+                return np.asarray(nc.variables[name][...])
+
+            # --- safety checks ---
+
+            # user must know, a priori, which "general species" to index
+            # this may be deduced from CQL3D output PostScript file
+            assert 0 <= species_index < int(_read('ngen'))
+
+            # CQL3D configuration
+            assert _read('rmag') == 0., \
+                    'Expected CQL3D magnetic axis major radius exactly zero'
+
+            # spatial coordinate mesh
+            rdim = nc.dimensions['rdim']
+            r0dim = nc.dimensions['r0dim']
+            assert 0 <= radial_index < rdim, \
+                    f'radial_index={radial_index} out of range [0, {rdim})'
+            assert rdim == r0dim, \
+                    'FP grid (rdim) is subset of radial grid (r0dim); lrindx mapping not implemented'
+
+            # velocity-space coordinate meshes (non-f dims) vs. distribution-function dims
+            xdim,  ydim  = nc.dimensions['xdim'],  nc.dimensions['ydim']
+            xdimf, ydimf = nc.dimensions['xdimf'], nc.dimensions['ydimf']
+            assert xdimf == xdim and ydimf == ydim, (
+                f'CQL3D f-mesh ({xdimf},{ydimf}) != coord mesh ({xdim},{ydim}); '
+                'distribution grid differs from coordinate vector grid'
+            )
+            del xdim, ydim, xdimf, ydimf
+
+            # --- load data ---
+
+            # scalar data
+            mass    = float(_read('fmass')[species_index])  # species mass in grams
+            charge  = float(_read('bnumb')[species_index]) * Q_ELEMENTARY  # species charge in ESU
+            vnorm   = float(_read('vnorm'))  # momentum-per-mass norm, cm/s
+            # velocity-space mesh
+            x     = _read('x')      # normalized momentum-per-mass, shape (xdim,)
+            y     = _read('y')      # pitch angle in radians, shape (rdim, ydim,)
+            fpol  = _read('f')      # distribution function (rdim, xdimf, ydimf,)
+                                    # OR (gen_species_dim, rdim, xdimf, ydimf,)
+            # spatial mesh
+            rya  = _read('rya') # Normalized radial mesh at bin centers, shape (r0dim,)
+                                # acts as flux-surface label (see 'radcoord' variable),
+                                # commonly, radcoord = 'sqpolflx' = sqrt(poloidal flux)
+            Rp   = _read('Rp')        # outerboard major radius, cm (=solrz[:,0])
+            bmid = _read('bmidplne')  # min |B| on each flux surface, Gauss
+            nmid = _read('density')   # (tdim, r0dim, species_dim), cm^-3
+
+        # Relativistic deproject momentum-per-mass u -> physical velocity v <= c
+        u = x * vnorm                           # four-velocity, cm/s
+        gamma = np.sqrt(1.0 + (u / CLIGHT)**2)  # relativistic Lorentz gamma
+        v = u / gamma                           # three-velocity, cm/s
+        assert np.all(np.diff(v) > 0), 'CQL3D u/gamma grid must strictly increase'
+
+        # resolve the radial coordinate
+        theta = y[radial_index]  # pitch-angle grid for this surface
+        if fpol.ndim == 4:
+            fpol = fpol[species_index, radial_index]
+        else:
+            assert fpol.ndim == 3
+            fpol = fpol[radial_index]
+
+        # Convert CQL3D (u,theta) to (vperp,vprll) by linear interpolation
+        interp = RegularGridInterpolator((v, theta), fpol, bounds_error=False,
+                                         fill_value=0.)
+
+        # trim default grid extent to where f is non-negligible:
+        # vmax = highest speed at which f, maximized over pitch angle, still
+        # exceeds vmax_floor of its peak value.
+        if vperp_vec is None or vprll_vec is None:
+            assert vmax_floor < 1
+            f_of_v = np.amax(fpol, axis=1)   # largest f at each speed
+            above = np.nonzero(f_of_v > vmax_floor * np.amax(f_of_v))[0]  # array indices
+            vmax = v[above[-1]]
+        if vperp_vec is None:
+            vperp_vec = np.linspace(0., vmax, nv)
+        if vprll_vec is None:
+            vprll_vec = np.linspace(-vmax, vmax, 2*nv + 1)
+        vperp_vec = np.asarray(vperp_vec)
+        vprll_vec = np.asarray(vprll_vec)
+
+        vperp, vprll = np.meshgrid(vperp_vec, vprll_vec, indexing='ij')
+        vmag = np.hypot(vperp, vprll)  # numerically robust vperp**2 + vprll**2
+        th = np.arctan2(vperp, vprll)  # vperp>=0 -> th in [0, pi]
+        df = interp(np.stack([vmag, th], axis=-1)) # (nvperp, nvprll)
+        df[df < floor] = floor
+
+        super().__init__(mass, charge, vperp_vec, vprll_vec, df)
+
+        # CQL3D provenance and flux-surface metadata (enables a field-line
+        # reader to be built from the same file + radial_index later)
+        self.path = path
+        self.radial_index = radial_index
+        self.rya = float(rya[radial_index])  # flux-surface label (see radcoord), NOT cm
+        self.Rp = float(Rp[radial_index])  # Major radius of bin centers at outerboard (cm)
+                                           # for mirror (rmag=0), this is cylindrical radius
+                                           # for tokamak, subtract rmag to get minor radius.
+                                           # Cross-check: agrees with R deduced
+                                           # from 'equilpsi' integration within
+                                           # <~0.1% for a few example CQL3D
+                                           # files --ATr,2026jun15
+        self.b_midplane = float(bmid[radial_index])  # Min mag fld |B| on a rad flux surfaces (Gauss)
+        self.n_midplane = float(nmid[-1,radial_index,species_index])  # midplane number density (cm^-3) from last time step
