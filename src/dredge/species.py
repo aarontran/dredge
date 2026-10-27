@@ -404,6 +404,109 @@ class KineticVDFGrid(Species):
         return df0_dEprll  # shape (vperp, vprll)
 
 
+class RelKineticPolarVDFGrid(Species):
+    r"""
+    RELATIVISTIC particle species distribution in an ionized plasma on a
+    grid of four-velocity magnitude u = \gamma * v and pitch angle.
+    Designed to work with CQL3D output distributions.
+    """
+
+    def __init__(self, mass, charge, u_vec, theta_vec, df):
+        r"""
+        RELATIVISTIC particle species distribution in an ionized plasma on a
+        grid of four-velocity magnitude u = \gamma * v and pitch angle.
+        Designed to work with CQL3D output distributions.
+        Inputs:
+            mass in grams
+            charge in ESU (Gaussian CGS unit)
+            u_vec in cm/s, 1D numpy array
+            theta_vec in radian, 1D numpy array
+            df in (cm/s)^(-3), 2D numpy array;
+                During initialization, df values will be adjusted to enforce
+                the normalization of 1.
+        """
+        super().__init__(mass, charge)
+
+        assert u_vec.ndim == 1
+        assert theta_vec.ndim == 1
+        assert df.shape == (u_vec.size, theta_vec.size)
+
+        self.u_vec     = np.asarray(u_vec)
+        self.theta_vec = np.asarray(theta_vec)
+        self.df = df
+        # zeroth velocity moment of df AS SUPPLIED (its velocity-space integral);
+        # retained so callers can recover the density of an unnormalized input
+        # df.  Equals 1 after the normalization on the next line.
+        self.norm = self.moment(1.)
+        self.df = self.df / self.norm
+
+        self.Tperp = self.mass * self.moment( 0.5*(self.vperp_vec**2)[:,np.newaxis] )
+        self.Tprll = self.mass * self.moment(     (self.vprll_vec**2)[np.newaxis,:] )
+
+    #def to_perp_grid(self):
+    #    r"""
+    #    Reduce to a KineticPerpVDFGrid by integrating out v_parallel.
+    #    Returns:
+    #        KineticPerpVDFGrid with the same mass/charge and reduced
+    #        distribution df_reduced(vperp) = \int f dv_parallel in (cm/s)^(-2)
+    #        (re-normalized to unit density on construction).
+    #    """
+    #    df_reduced = np.trapezoid(self.df, self.vprll_vec, axis=1)
+    #    return KineticPerpVDFGrid(self.mass, self.charge, self.vperp_vec,
+    #                              df_reduced)
+
+    def moment(self, *args, **kwargs):
+        return self.moment_bcast_left(*args, **kwargs)
+
+    def moment_bcast_left(self, x):
+        """
+        Compute a velocity-space moment, broadcasting over LEADING axes
+        This is "hot" code, called many times in loop, so must be fast.
+
+        Input:
+            x = scalar, or numpy array with valid shape (ndim >=2) of:
+                    (..., vperp_vec.size, 1)
+                    (..., 1, vprll_vec.size)
+                    (..., *df.shape)
+                with zero, one, two, or any number of trailing axes
+                notice that 1D arrays do not work; it's unclear whether such
+                arrays should broadcast over vperp or vprll
+        """
+        if np.ndim(x) == 0:
+            x = x * np.ones_like(self.df)
+        assert x.ndim >= self.df.ndim  # prevent ambiguous 1D broadcast
+        #if x.ndim == 2:
+        #    mom_reduced = np.trapezoid(x * self.df, self.vprll_vec, axis=-1)
+        #    mom = np.trapezoid(mom_reduced * 2*np.pi*self.vperp_vec, self.vperp_vec)
+        #else:
+        #    target_shape = [1] * x.ndim
+        #    target_shape[-2] = self.df.shape[0]  # vperp axis
+        #    target_shape[-1] = self.df.shape[1]  # vprll axis
+        #    df_wide = np.reshape(self.df, tuple(target_shape))
+        #    target_shape = [1] * (x.ndim - 1)
+        #    target_shape[-1] = self.df.shape[0]  # vperp axis
+        #    vperp_wide = np.reshape(self.vperp_vec, tuple(target_shape))
+        #    mom_reduced = np.trapezoid(x * df_wide, self.vprll_vec, axis=-1)
+        #    mom = np.trapezoid(mom_reduced * 2*np.pi*vperp_wide, self.vperp_vec, axis=-1)
+        # Take advantage of numpy's default broadcasting semantics,
+        # https://numpy.org/devdocs/user/basics.broadcasting.html#general-broadcasting-rules
+        mom_reduced = np.trapezoid(x * self.df, self.vprll_vec, axis=-1)
+        mom = np.trapezoid(mom_reduced * 2*np.pi*self.vperp_vec, self.vperp_vec, axis=-1)
+        return mom
+
+    def moment_bcast_right(self, x):
+        raise NotImplementedError
+
+    def df_at(self, vperp, vprll):
+        raise NotImplementedError
+
+    def compute_dF0_dEperp(self):
+        raise NotImplementedError
+
+    def compute_dF0_dEprll(self):
+        raise NotImplementedError
+
+
 class CQL3DVDFGrid(KineticVDFGrid):
     """
     Particle species whose velocity distribution is loaded from a CQL3D
