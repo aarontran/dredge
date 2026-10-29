@@ -141,7 +141,7 @@ class OrbitAverage(object):
         self.gradB    = fld.query_gradBmag_at(self.ssamp)  # shape (3,vperp,vprll,s)
         self.dbhat_ds = fld.query_dbhat_ds_at(self.ssamp)  # shape (3,vperp,vprll,s)
         self.bhat = self.Bvec / self.Bmag[np.newaxis,...]  # shape (3,vperp,vprll,s)
-        self.B_B0 = self.Bmag / (self.Bmag[:,:,0])[:,:,np.newaxis]  # shape (  vperp,vprll,s)
+        self.B_B0 = self.Bmag / self.B0                    # shape (  vperp,vprll,s)
 
         # LOCAL signed cyclotron frequency at varying "s"
         self.Omcs_loc = sp.Omcs(self.Bmag)                          # shape (  vperp,vprll,s)
