@@ -15,9 +15,9 @@ from scipy.interpolate import RegularGridInterpolator
 
 from .special import Zfunc
 from .species import Species, KineticVDFGrid
-from .field import VecFieldLine
+from .field import FieldLine
 from .const import CLIGHT
-from .bavg import OrbitAverage, _bounce_average_njit_kernel
+from .bavg import OrbitAverage, BounceOrbitAverage, _bounce_average_njit_kernel
 from .util import print0, printn
 from .wavegrid import WaveGrid
 
@@ -1022,7 +1022,7 @@ class BounceAvgESPerp(object):
     def __init__(self,
                  grid: WaveGrid,
                  species: KineticVDFGrid,
-                 field: VecFieldLine,
+                 field: FieldLine,
                  orbit: OrbitAverage,
     ):
         """
@@ -1048,7 +1048,7 @@ class BounceAvgESPerp(object):
             grid = dredge.chi.WaveGrid(...) instance
             species = dredge.species.KineticVDFGrid(...) instance
                       sampled at field-line-following coordinate s = 0
-            field = dredge.field.VecFieldLine(...) instance
+            field = dredge.field.FieldLine(...) instance
             orbit = dredge.bavg.OrbitAverage(...) instance, used to
                     average over particle orbits along the field line;
                     BounceOrbitAverage for mirror fields (VecFieldLine), or
@@ -1060,7 +1060,7 @@ class BounceAvgESPerp(object):
         self.field = field
         self.orbit = orbit
         assert isinstance(species, KineticVDFGrid)
-        assert isinstance(field, VecFieldLine)
+        assert isinstance(field, FieldLine)
         assert isinstance(orbit, OrbitAverage)
         assert orbit.species is self.species
         assert orbit.field is self.field
@@ -1403,7 +1403,7 @@ class BounceAvgESPerp(object):
                         * np.sum(psihat * self.orbit.dbhat_ds, axis=0)
                         / sp.vth_perp / abs(sp.Omcs(self.B0))  # "standard" normalization
                         * np.sign(sp.q)  # re-attach the charge sign
-                        * self.orbit.r_r0# because "plain" k_perp/Omega0 appears without
+                        * self.orbit.r_r0 # because "plain" k_perp/Omega0 appears without
                                          # v_perp factor, it's no longer bounce invariant,
                                          # we need to reattach B(s)/B0 factor
                                          # REPLACED WITH r(s)/r(0) --ATr,2026apr21
@@ -1751,9 +1751,10 @@ class BounceAvgESPerp(object):
         printn(f'     ... grid    ... {self.time_setup_omloop_grid:.6f}')
         printn(f'     ... J0sq    ... {self.time_setup_omloop_J0sq:.6f}')
         printn(f'time bavg        {self.time_bavg      :.6f}')
-        printn(f'     ... setup   ... {self.orbit.time_bavg_setup:.6f}')
-        printn(f'     ... trapz   ... {self.orbit.time_bavg_trapz:.6f}')
-        printn(f'     ... singu   ... {self.orbit.time_bavg_singu:.6f}')
+        if isinstance(self.orbit, BounceOrbitAverage):
+            printn(f'     ... setup   ... {self.orbit.time_bavg_setup:.6f}')
+            printn(f'     ... trapz   ... {self.orbit.time_bavg_trapz:.6f}')
+            printn(f'     ... singu   ... {self.orbit.time_bavg_singu:.6f}')
         printn(f'time mom         {self.time_mom       :.6f}')
         printn(f'time tot         {self.time_tot       :.6f}')
 
@@ -1771,7 +1772,8 @@ class BounceAvgESPerp(object):
         #self.orbit.time_bavg_setup = 0
         #self.orbit.time_bavg_trapz = 0
         #self.orbit.time_bavg_singu = 0
-        self.orbit._reset_timers()  # for bounce_average_norm_raw(...) timers
+        if isinstance(self.orbit, BounceOrbitAverage):
+            self.orbit._reset_timers()  # for bounce_average_norm_raw(...) timers
         self.time_mom = 0
         self.time_tot = 0
 

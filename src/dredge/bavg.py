@@ -107,10 +107,89 @@ class OrbitAverage(object):
     """
 
     def __init__(self, species, field):
+        """
+        Inputs:
+            species = dredge.species.KineticVDFGrid(...) instance
+                      sampled at field-line-following coordinate s=0
+            field = dredge.field.FieldLine(...) instance
+        """
         self.species = species
         self.field = field
         # midplane magnetic field for \Omega_{cs} and other normalizations
-        self.B0 = self.field.query_Bmag_at([0.])
+        self.B0 = field.query_Bmag_at([0.])
+
+    def _setup_local_quantities(self):
+        """
+        Prepare intermediate variables for orbit averaging
+        ALL VARIABLES IN DIMENSIONFUL (CGS) UNITS.
+        Requires self.ssamp to be initialized.
+        """
+        # philosophy, only compute stuff that uses vgrid and Bgeometry info,
+        # and keep everything in CGS units for now; let user/caller handle the
+        # k gridding and non-dimensionalization
+
+        sp, fld = (self.species, self.field)
+        # (vperp,vprll) are interpreted to be at s=0 (midplane)
+        vperp, vprll = np.meshgrid(sp.vperp_vec, sp.vprll_vec, indexing='ij')
+        self.E = 0.5*sp.mass*(vperp**2 + vprll**2)         # shape (  vperp,vprll)
+        self.mu = 0.5*sp.mass*vperp**2 / self.B0           # shape (  vperp,vprll)
+
+        # LOCAL magnetic field structure at varying "s"
+        # ratio B(s)/B(s=0) is useful for factors of Omega_c(s)/Omega_c(s=0)
+        self.Bmag     = fld.query_Bmag_at    (self.ssamp)  # shape (  vperp,vprll,s)
+        self.Bvec     = fld.query_B_at       (self.ssamp)  # shape (3,vperp,vprll,s)
+        self.gradB    = fld.query_gradBmag_at(self.ssamp)  # shape (3,vperp,vprll,s)
+        self.dbhat_ds = fld.query_dbhat_ds_at(self.ssamp)  # shape (3,vperp,vprll,s)
+        self.bhat = self.Bvec / self.Bmag[np.newaxis,...]  # shape (3,vperp,vprll,s)
+        self.B_B0 = self.Bmag / (self.Bmag[:,:,0])[:,:,np.newaxis]  # shape (  vperp,vprll,s)
+
+        # LOCAL signed cyclotron frequency at varying "s"
+        self.Omcs_loc = sp.Omcs(self.Bmag)                          # shape (  vperp,vprll,s)
+
+        # LOCAL mapped velocities at varying "s"; shape (  vperp,vprll,s)
+        self.vperp_loc = np.sqrt(self.B_B0) * vperp[:,:,np.newaxis]
+        self.vprll_loc = np.sqrt(  vprll[:,:,np.newaxis]**2
+                                 + vperp[:,:,np.newaxis]**2 * (1. - self.B_B0) )
+        self.vprll_loc *= np.sign( vprll[:,:,np.newaxis] )
+        # equivalent writings using (E,mu) coordinates
+        #self.vperp_loc = (2 * mu[:,:,np.newaxis] * self.Bmag / sp.m)**0.5
+        #self.vprll_loc = (2/sp.m * (E[:,:,np.newaxis] - mu[:,:,np.newaxis] * self.Bmag))**0.5
+
+        # TODO implement E,mu coordinates because then one velocity-space
+        # coordinate factors out of vdrift expressions, when normalized to
+        # Bturn or sturn or similar...  --ATr,2025nov11+13
+
+        # LOCAL guiding-center drift velocities; shape (3,vperp,vprll,s)
+        self.v_gradB = (
+                0.5 * (self.vperp_loc**2 / self.Omcs_loc / self.Bmag)[np.newaxis,...]
+                * np.cross(self.bhat, self.gradB, axisa=0,axisb=0,axisc=0)
+        )
+        self.v_curv = (
+                (self.vprll_loc**2 / self.Omcs_loc)[np.newaxis,...]
+                * np.cross(self.bhat, self.dbhat_ds, axisa=0,axisb=0,axisc=0)
+        )
+
+        return
+
+    def bounce_average(self, x, norm=True):
+        """
+        Average a quantity x over particle orbits.
+
+        Input:
+            x = shape (vperp, vprll, s)
+        Return:
+            shape (vperp, vprll)
+        """
+        raise NotImplementedError
+
+    def bounce_average_norm_raw(self, x, norm=True):
+        """Like self.bounce_average(...), but remove safety checks and
+        conditionals to go as fast as possible."""
+        raise NotImplementedError
+
+    def bounce_average_njit(self, x, norm=True):
+        """Like self.bounce_average(...), but with numba JIT compilation."""
+        raise NotImplementedError
 
 
 class UniformOrbitAverage(OrbitAverage):
@@ -118,7 +197,29 @@ class UniformOrbitAverage(OrbitAverage):
     def __init__(self, species, field):
         super().__init__(species, field)
 
-        raise NotImplementedError
+        # field-line-following coordinate axis; shape (vperp,vprll,s)
+        self.ssamp = np.zeros(
+                (species.vperp_vec.size, species.vprll_vec.size, 1)
+        )
+
+        self._setup_local_quantities()
+
+        # ratio r(s)/r(s=0) is useful for factors of k(s)/k(s=0) assuming
+        # k_perp ~ m/r where m = azimuthal mode number, r = cylindrical radius
+        # UniformOrbitAverage --> k_perp does not vary along s
+        self.r_r0 = np.ones_like(self.ssamp)
+
+    def bounce_average(self, x, norm=True):
+        assert norm  # un-normalized case has no meaning
+        return x[...,0]  # allows broadcasting over left axes
+
+    def bounce_average_norm_raw(self, x, norm=True):
+        assert norm
+        return x[...,0]
+
+    def bounce_average_njit(self, x, norm=True):
+        assert norm
+        return x[...,0]
 
 
 class BounceOrbitAverage(OrbitAverage):
@@ -139,15 +240,11 @@ class BounceOrbitAverage(OrbitAverage):
         sp, fld = (self.species, self.field)
         # (vperp,vprll) are interpreted to be at s=0 (midplane)
         vperp, vprll = np.meshgrid(sp.vperp_vec, sp.vprll_vec, indexing='ij')
-        # compute (E,mu) on grid to do the bounce average
-        # and construct useful variables
+
+        # determine ssamp coordinate extents for each point in velocity space
+        # based on particle turning points
         E = 0.5*sp.mass*(vperp**2 + vprll**2)
         mu = 0.5*sp.mass*vperp**2 / self.B0
-
-        # save configuration param
-        self.TBOUNCE4TH_MAX = TBOUNCE4TH_MAX
-
-        # segment the velocity phase space regions
         trapped = mu*np.amax(fld.Bmag) > E
         passing = np.logical_not(trapped)
         # need to deal with special case of mu=0, call it passing
@@ -167,6 +264,7 @@ class BounceOrbitAverage(OrbitAverage):
         # due to numerical imprecision.
         Bturn = np.minimum(Bturn, np.amax(fld.Bmag))
         Bturn = np.maximum(Bturn, np.amin(fld.Bmag))
+
         # get bounce-average integral upper limit
         sturn = fld.query_s_at(Bturn)
 
@@ -181,66 +279,19 @@ class BounceOrbitAverage(OrbitAverage):
                 ssamp_loc = ssamp_loc[:-1] + 0.5*np.diff(ssamp_loc)  # offset to get cell centers
                 ssamp[ii,jj,:] = ssamp_loc
 
-        self.E = E  # (vperp,vprll) grid
-        self.mu = mu  # (vperp,vprll) grid
         self.trapped = trapped  # (vperp,vprll) grid  # useful for viz, not needed For integral
         self.passing = passing  # (vperp,vprll) grid  # useful for viz, not needed For integral
         self.Bturn = Bturn  # (vperp,vprll) grid  # useful for viz, not needed For integral
-        self.sturn = sturn  # (vperp,vprll) grid
-        self.ssamp = ssamp  # (vperp,vprll,NS_RESOLUTION) grid
-        self.rsamp = fld.query_r_at(self.ssamp)  # shape (vperp,vprll,NS_RESOLUTION)
-        #self.zsamp = fld.query_z_at(self.ssamp)  # shape (vperp,vprll,NS_RESOLUTION)
+        self.sturn = sturn  # (vperp,vprll) grid  # useful for viz, not needed For integral yet
+        self.ssamp = ssamp  # (vperp,vprll,s) grid
 
-        # philosophy, only compute stuff that uses vgrid and Bgeometry info,
-        # and keep everything in CGS units for now; let user/caller handle the
-        # k gridding and non-dimensionalization
+        self._setup_local_quantities()
 
-        # LOCAL magnetic field structure at varying "s"
-        self.Bmag     = fld.query_Bmag_at    (self.ssamp)  # shape (  vperp,vprll,NS_RESOLUTION)
-        self.Bvec     = fld.query_B_at       (self.ssamp)  # shape (3,vperp,vprll,NS_RESOLUTION)
-        self.gradB    = fld.query_gradBmag_at(self.ssamp)  # shape (3,vperp,vprll,NS_RESOLUTION)
-        self.dbhat_ds = fld.query_dbhat_ds_at(self.ssamp)  # shape (3,vperp,vprll,NS_RESOLUTION)
-        self.bhat = self.Bvec / self.Bmag[np.newaxis,...]  # shape (3,vperp,vprll,NS_RESOLUTION)
-
-        # ratio B(s)/B(s=0) along field line; shape (vperp,vprll,NS_RESOLUTION)
-        # useful for factors of Omega_c(s)/Omega_c(s=0)
-        # B(s=0) should be the same for all points in velocity space
-        self.B_B0 = self.Bmag / (self.Bmag[:,:,0])[:,:,np.newaxis]
-
-        # ratio r(s)/r(s=0) along field line; shape (vperp,vprll,NS_RESOLUTION)
+        # ratio r(s)/r(s=0) along field line; shape (vperp,vprll,s)
         # useful for factors of k(s)/k(s=0) if we assume k_perp ~ m/r
         # where m is azimuthal mode number and r is cylindrical radius
+        self.rsamp = fld.query_r_at(self.ssamp)  # shape (vperp,vprll,s)
         self.r_r0 = self.rsamp / (self.rsamp[:,:,0])[:,:,np.newaxis]
-
-        # LOCAL signed cyclotron frequency at varying "s"
-        # shape (vperp,vprll,NS_RESOLUTION)
-        self.Omcs_loc = sp.Omcs(self.Bmag)
-
-        # LOCAL velocities at varying "s";
-        # shape (vperp,vprll,NS_RESOLUTION)
-        self.vperp_loc = np.sqrt(self.B_B0) * vperp[:,:,np.newaxis]
-        self.vprll_loc = np.sqrt(  vprll[:,:,np.newaxis]**2
-                                 + vperp[:,:,np.newaxis]**2 * (1. - self.B_B0) )
-        self.vprll_loc *= np.sign( vprll[:,:,np.newaxis] )
-        # equivalent rewritings
-        # self.vperp_loc = (2 * mu[:,:,np.newaxis] * self.Bmag / sp.m)**0.5
-        # self.vprll_loc = (2/sp.m * (E[:,:,np.newaxis] - mu[:,:,np.newaxis] * self.Bmag))**0.5
-
-        # TODO Rahul mentioned something about using E,mu coordinates because then
-        # one velocity-space coordinate factors out of vdrift expressions, when
-        # you normalize to Bturn or sturn or something... can probably simplify
-        # this code --ATr,2025nov11+13
-
-        # LOCAL guiding-center drift velocities at varying s;
-        # shape (3,vperp,vprll,NS_RESOLUTION)
-        self.v_gradB = (
-                0.5 * (self.vperp_loc**2 / self.Omcs_loc / self.Bmag)[np.newaxis,...]
-                * np.cross(self.bhat, self.gradB, axisa=0,axisb=0,axisc=0)
-        )
-        self.v_curv = (
-                (self.vprll_loc**2 / self.Omcs_loc)[np.newaxis,...]
-                * np.cross(self.bhat, self.dbhat_ds, axisa=0,axisb=0,axisc=0)
-        )
 
         # Need this second-order gradient to evaluate bounce integral in the
         # limit vprll->0
@@ -248,6 +299,10 @@ class BounceOrbitAverage(OrbitAverage):
         dB_ds2 = np.gradient(np.gradient(fld.Bmag, fld.s, edge_order=2),
                              fld.s, edge_order=2)
         self.dB_ds2_origin = dB_ds2[0]  # scalar
+
+        # save configuration param; needed before first call to
+        # bounce_average(...)
+        self.TBOUNCE4TH_MAX = TBOUNCE4TH_MAX
 
         # used to normalize bounce integral.
         # to be honest, the user should probably call this with
@@ -277,7 +332,7 @@ class BounceOrbitAverage(OrbitAverage):
         try:
             _ = self.ssamp
         except:
-            raise Exception("ERROR: need to call prepare_bounce_average(...)")
+            raise Exception("ERROR: need to call _setup_local_quantities(...)")
 
         sp, fld = (self.species, self.field)
         assert x.shape[-1] == self.ssamp.shape[-1]
@@ -291,8 +346,8 @@ class BounceOrbitAverage(OrbitAverage):
 
         E = self.E[...,np.newaxis]  # should be shallow copy
         mu = self.mu[...,np.newaxis]  # for easier broadcasting
-        ssamp = self.ssamp  # (vperp,vprll,NS_RESOLUTION) grid
-        Bsamp = self.Bmag   # (vperp,vprll,NS_RESOLUTION) grid
+        ssamp = self.ssamp  # (vperp,vprll,s) grid
+        Bsamp = self.Bmag   # (vperp,vprll,s) grid
 
         # NOTE: the limit vprll -> 0 requires some care to handle singularity
         # Got it with help from ChatGPT, for the case of B''(s=0) nonzero...
