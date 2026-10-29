@@ -157,6 +157,78 @@ class ConstFieldLine(FieldLine):
         return np.zeros_like(B_points)
 
 
+class CircularFieldLine(FieldLine):
+    """
+    Circular magnetic field line of constant magnitude and radius.
+    Same as the field of an infinitely-long current-carrying wire.
+    Field line is traced in a cylindrical coordinate system, starting from
+    (r,z) = (R0,0) towards +z direction.
+    """
+    def __init__(self, B0, R0, axis=2):
+        r"""
+        Circular magnetic field line of constant magnitude and radius.
+        Same as the field of an infinitely-long current-carrying wire.
+        Field line is traced in a cylindrical coordinate system, starting from
+        (r,z) = (R0,0) towards +z direction.
+
+        Internally, the field is stored in Cartesian coordinates where, by
+        default,
+            x = azimuthal direction (towards ion-diamagnetic drift)
+            y = cylindrical R coordinate
+            z = cylindrical Z coordinate
+
+        Inputs:
+            B0 = magnetic field strength in Gauss (CGS unit)
+            R0 = radius of circle (cm)
+            axis = 0,1,2 choose internal Cartesian (x,y,z) axis corresponding
+                to the B-field direction at cylindrical (R,Z) = (R0,0)
+        """
+        self.B0 = B0
+        self.R0 = R0
+        self.axis = axis
+
+    def query_Bmag_at(self, s_points):
+        return self.B0 * np.ones_like(s_points)
+
+    def query_B_at(self, s_points):
+        theta = s_points / self.R0  # convert to radians
+        Bx =  np.zeros_like(theta)
+        By = -self.B0 * np.sin(theta)
+        Bz =  self.B0 * np.cos(theta)
+        if self.axis == 0:
+            return np.array([Bz, Bx, By])
+        if self.axis == 1:
+            return np.array([By, Bz, Bx])
+        if self.axis == 2:
+            return np.array([Bx, By, Bz])
+
+    def query_gradBmag_at(self, s_points):
+        # same as curvature vector multiplied by B0
+        return self.B0 * self.query_dbhat_ds_at(s_points)
+
+    def query_dbhat_ds_at(self, s_points):
+        # Internal coordinate system has
+        # \hat{b} = (0, -sin(theta), cos(theta))
+        #         = (0, -z/R,        y/R)
+        # d/ds( \hat{b} ) = d\theta/ds * d/d\theta( \hat{b} )
+        #                 = 1/R * (0, -cos(theta), -sin(theta))
+        # this is the curvature vector
+        theta = s_points / self.R0  # convert to radians
+        kx = np.zeros_like(s_points)
+        ky = -np.cos(theta) / self.R0
+        kz = -np.sin(theta) / self.R0
+        if self.axis == 0:
+            return np.array([kz, kx, ky])
+        if self.axis == 1:
+            return np.array([ky, kz, kx])
+        if self.axis == 2:
+            return np.array([kx, ky, kz])
+
+    def query_s_at(self, B_points):
+        # cannot invert B to get s, so just map to s=0 (like ConstFieldLine)
+        return np.zeros_like(B_points)
+
+
 class VecFieldLine(FieldLine):
     """
     Axisymmetric magnetic field line in cylindrical geometry
