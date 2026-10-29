@@ -60,19 +60,22 @@ def test_dipole_bounce_average():
     # ----------------------------------------------------------------
     # Perform the bounce-average calculation
 
+    orbit_i = dr.bavg.BounceOrbitAverage( species = ion,
+                                          field = field,
+                                          NS_RESOLUTION = 30 )
+
     calc = dr.chi.BounceAvgESPerp(
         grid = solve_grid,
         species = ion,
         field = field,
+        orbit = orbit_i,
     )
-
-    calc.setup_bounce_average(NS_RESOLUTION = 30)
 
     # compute bounce-averaged (omega_drift / m) where m = azimuthal mode number
     # this includes k_\perp(s) structure into the bounce average
     calc._reset_timers()
-    omega_m_gradB_BA = calc.bounce_average_norm_raw(calc.v_gradB[0]/calc.rsamp, norm=True)
-    omega_m_curv_BA  = calc.bounce_average_norm_raw(calc.v_curv[0]/calc.rsamp,  norm=True)
+    omega_m_gradB_BA = calc.orbit.bounce_average_norm_raw(calc.orbit.v_gradB[0]/calc.orbit.rsamp, norm=True)
+    omega_m_curv_BA  = calc.orbit.bounce_average_norm_raw(calc.orbit.v_curv[0]/calc.orbit.rsamp,  norm=True)
     omega_m_drift_BA = omega_m_gradB_BA + omega_m_curv_BA
 
     # ----------------------------------------------------------------
@@ -84,7 +87,7 @@ def test_dipole_bounce_average():
     # need -1 to reconcile my (x,y,z) coordinates with Mishchenko's (r,z,phi) coordinates
     # and need factor of CLIGHT to convert SI into CGS
     # Mishchenko+ (2018 JPP), Section 5, top of page 11
-    omega_m_drift_BA_expected = -1 * (8/3) * calc.E * CLIGHT / (ion.charge * psi)
+    omega_m_drift_BA_expected = -1 * (8/3) * calc.orbit.E * CLIGHT / (ion.charge * psi)
 
     # actual bounds are (0.76849,1.125) computed with NS_RESOLUTION = 300
     # actual bounds are (0.76449,1.125) computed with NS_RESOLUTION = 30

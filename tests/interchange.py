@@ -151,17 +151,23 @@ def interchange(ion_method='loop6d', proc_layout=(1,1,1)):
                                   omega_im_vec * ion.Omcs(B0),
                                   proc_layout = proc_layout )
 
+    # takes a few seconds for 40x100x201 grid on perlmutter
+    orbit_i = dr.bavg.BounceOrbitAverage( species = ion,
+                                          field = field,
+                                          NS_RESOLUTION = ns_resolution )
+    orbit_e = dr.bavg.BounceOrbitAverage( species = lec,
+                                          field = field,
+                                          NS_RESOLUTION = ns_resolution )
+
     calc_i = dr.chi.BounceAvgESPerp( grid = solve_grid,
                                      species = ion,
-                                     field = field, )
+                                     field = field,
+                                     orbit = orbit_i )
 
     calc_e = dr.chi.BounceAvgESPerp( grid = solve_grid,
                                      species = lec,
-                                     field = field, )
-
-    # takes a few seconds for 40x100x201 grid on perlmutter
-    calc_i.setup_bounce_average(NS_RESOLUTION=ns_resolution)
-    calc_e.setup_bounce_average(NS_RESOLUTION=ns_resolution)
+                                     field = field,
+                                     orbit = orbit_e )
 
     # ----------------------------------------------------------------
 

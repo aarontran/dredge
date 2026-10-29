@@ -17,7 +17,7 @@ from .special import Zfunc
 from .species import Species, KineticVDFGrid
 from .field import VecFieldLine
 from .const import CLIGHT
-from .bavg import _bounce_average_njit_kernel
+from .bavg import OrbitAverage, _bounce_average_njit_kernel
 from .util import print0, printn
 from .wavegrid import WaveGrid
 
@@ -1023,6 +1023,7 @@ class BounceAvgESPerp(object):
                  grid: WaveGrid,
                  species: KineticVDFGrid,
                  field: VecFieldLine,
+                 orbit: OrbitAverage,
     ):
         """
         Susceptibility for perpendicular electrostatic waves in a paraxial
@@ -1048,12 +1049,21 @@ class BounceAvgESPerp(object):
             species = dredge.species.KineticVDFGrid(...) instance
                       sampled at field-line-following coordinate s = 0
             field = dredge.field.VecFieldLine(...) instance
+            orbit = dredge.bavg.OrbitAverage(...) instance, used to
+                    average over particle orbits along the field line;
+                    BounceOrbitAverage for mirror fields (VecFieldLine), or
+                    UniformOrbitAverage for fields invariant along s
+                    (ConstFieldLine, CircularFieldLine)
         """
         self.grid = grid
         self.species = species
         self.field = field
+        self.orbit = orbit
         assert isinstance(species, KineticVDFGrid)
         assert isinstance(field, VecFieldLine)
+        assert isinstance(orbit, OrbitAverage)
+        assert orbit.species is self.species
+        assert orbit.field is self.field
 
         # midplane magnetic field for \Omega_{cs} and other normalizations
         self.B0 = field.query_Bmag_at([0.])
@@ -1073,407 +1083,6 @@ class BounceAvgESPerp(object):
         self.oo = omr + 1j*omi
 
         return
-
-    def setup_bounce_average(self, NS_RESOLUTION=500, TBOUNCE4TH_MAX = 1e99):
-        """
-        Prepare intermediate variables for bounce averaging
-        ALL VARIABLES IN DIMENSIONFUL (CGS) UNITS
-        Inputs:
-             tbounce4th_max = maximum possible value for tbounce4th to avoid
-                NaNs... only really necessary for vprll=0 and vperp=0
-                bounce time will be pinned to max(tbounce) anywhere on grid
-                    (usually neighboring points) or tbounce4th_max, whichever
-                    is less.
-        """
-        sp, fld = (self.species, self.field)
-        # (vperp,vprll) are interpreted to be at s=0 (midplane)
-        vperp, vprll = np.meshgrid(sp.vperp_vec, sp.vprll_vec, indexing='ij')
-        # compute (E,mu) on grid to do the bounce average
-        # and construct useful variables
-        E = 0.5*sp.mass*(vperp**2 + vprll**2)
-        mu = 0.5*sp.mass*vperp**2 / self.B0
-
-        # save configuration param
-        self.TBOUNCE4TH_MAX = TBOUNCE4TH_MAX
-
-        # segment the velocity phase space regions
-        trapped = mu*np.amax(fld.Bmag) > E
-        passing = np.logical_not(trapped)
-        # need to deal with special case of mu=0, call it passing
-        # even for mu=0 and E=0  # TODO can handle more elegantly?  -ATr,2025nov06
-        trapped[ mu == 0 ] = False
-        passing[ mu == 0 ] = True
-        assert np.all(np.logical_or(trapped, passing))
-
-        # turning point for all trapped particles
-        Bturn = np.empty_like(E)
-        Bturn[mu != 0.] = E[mu!=0.] / mu[mu!=0.]
-        Bturn[mu == 0.] = np.amax(fld.Bmag)  # avoid divide-by-zero; mu=0 is always pasing except for singularity at origin
-        Bturn[passing] = np.amax(fld.Bmag)
-        # must enforce Bturn strictly within
-        # B_vec range for interpolation;
-        # when vprll = 0, E/mu can be < min(B_vec)
-        # due to numerical imprecision.
-        Bturn = np.minimum(Bturn, np.amax(fld.Bmag))
-        Bturn = np.maximum(Bturn, np.amin(fld.Bmag))
-        # get bounce-average integral upper limit
-        sturn = fld.query_s_at(Bturn)
-
-        # Construct arc-length "s" grid for every point in velocity space,
-        # staggering positions to make numerical integral more accurate.
-        ssamp = np.empty((sp.vperp_vec.size, sp.vprll_vec.size, NS_RESOLUTION),
-                          dtype=np.float64)
-        for ii in range(sp.vperp_vec.size):
-            for jj in range(sp.vprll_vec.size):
-                ssamp_loc = np.linspace(fld.s[0], sturn[ii,jj],
-                                         NS_RESOLUTION+1)
-                ssamp_loc = ssamp_loc[:-1] + 0.5*np.diff(ssamp_loc)  # offset to get cell centers
-                ssamp[ii,jj,:] = ssamp_loc
-
-        self.E = E  # (vperp,vprll) grid
-        self.mu = mu  # (vperp,vprll) grid
-        self.trapped = trapped  # (vperp,vprll) grid  # useful for viz, not needed For integral
-        self.passing = passing  # (vperp,vprll) grid  # useful for viz, not needed For integral
-        self.Bturn = Bturn  # (vperp,vprll) grid  # useful for viz, not needed For integral
-        self.sturn = sturn  # (vperp,vprll) grid
-        self.ssamp = ssamp  # (vperp,vprll,NS_RESOLUTION) grid
-        self.rsamp = fld.query_r_at(self.ssamp)  # shape (vperp,vprll,NS_RESOLUTION)
-        #self.zsamp = fld.query_z_at(self.ssamp)  # shape (vperp,vprll,NS_RESOLUTION)
-
-        # philosophy, only compute stuff that uses vgrid and Bgeometry info,
-        # and keep everything in CGS units for now; let user/caller handle the
-        # k gridding and non-dimensionalization
-
-        # LOCAL magnetic field structure at varying "s"
-        self.Bmag     = fld.query_Bmag_at    (self.ssamp)  # shape (  vperp,vprll,NS_RESOLUTION)
-        self.Bvec     = fld.query_B_at       (self.ssamp)  # shape (3,vperp,vprll,NS_RESOLUTION)
-        self.gradB    = fld.query_gradBmag_at(self.ssamp)  # shape (3,vperp,vprll,NS_RESOLUTION)
-        self.dbhat_ds = fld.query_dbhat_ds_at(self.ssamp)  # shape (3,vperp,vprll,NS_RESOLUTION)
-        self.bhat = self.Bvec / self.Bmag[np.newaxis,...]  # shape (3,vperp,vprll,NS_RESOLUTION)
-
-        # ratio B(s)/B(s=0) along field line; shape (vperp,vprll,NS_RESOLUTION)
-        # useful for factors of Omega_c(s)/Omega_c(s=0)
-        # B(s=0) should be the same for all points in velocity space
-        self.B_B0 = self.Bmag / (self.Bmag[:,:,0])[:,:,np.newaxis]
-
-        # ratio r(s)/r(s=0) along field line; shape (vperp,vprll,NS_RESOLUTION)
-        # useful for factors of k(s)/k(s=0) if we assume k_perp ~ m/r
-        # where m is azimuthal mode number and r is cylindrical radius
-        self.r_r0 = self.rsamp / (self.rsamp[:,:,0])[:,:,np.newaxis]
-
-        # LOCAL signed cyclotron frequency at varying "s"
-        # shape (vperp,vprll,NS_RESOLUTION)
-        self.Omcs_loc = sp.Omcs(self.Bmag)
-
-        # LOCAL velocities at varying "s";
-        # shape (vperp,vprll,NS_RESOLUTION)
-        self.vperp_loc = np.sqrt(self.B_B0) * vperp[:,:,np.newaxis]
-        self.vprll_loc = np.sqrt(  vprll[:,:,np.newaxis]**2
-                                 + vperp[:,:,np.newaxis]**2 * (1. - self.B_B0) )
-        self.vprll_loc *= np.sign( vprll[:,:,np.newaxis] )
-        # equivalent rewritings
-        # self.vperp_loc = (2 * mu[:,:,np.newaxis] * self.Bmag / sp.m)**0.5
-        # self.vprll_loc = (2/sp.m * (E[:,:,np.newaxis] - mu[:,:,np.newaxis] * self.Bmag))**0.5
-
-        # TODO Rahul mentioned something about using E,mu coordinates because then
-        # one velocity-space coordinate factors out of vdrift expressions, when
-        # you normalize to Bturn or sturn or something... can probably simplify
-        # this code --ATr,2025nov11+13
-
-        # LOCAL guiding-center drift velocities at varying s;
-        # shape (3,vperp,vprll,NS_RESOLUTION)
-        self.v_gradB = (
-                0.5 * (self.vperp_loc**2 / self.Omcs_loc / self.Bmag)[np.newaxis,...]
-                * np.cross(self.bhat, self.gradB, axisa=0,axisb=0,axisc=0)
-        )
-        self.v_curv = (
-                (self.vprll_loc**2 / self.Omcs_loc)[np.newaxis,...]
-                * np.cross(self.bhat, self.dbhat_ds, axisa=0,axisb=0,axisc=0)
-        )
-
-        # Need this second-order gradient to evaluate bounce integral in the
-        # limit vprll->0
-        # TODO MIGHT NEED HIGHER ORDER EDGE STENCILS FOR THIS?
-        dB_ds2 = np.gradient(np.gradient(fld.Bmag, fld.s, edge_order=2),
-                             fld.s, edge_order=2)
-        self.dB_ds2_origin = dB_ds2[0]  # scalar
-
-        # used to normalize bounce integral.
-        # to be honest, the user should probably call this with
-        # whatever integration method they want....
-        self.tbounce4th = self.bounce_average(
-            x = np.ones_like(ssamp),
-            norm = False,
-        )
-
-        # useful for "hot" bounce average integrals
-        # pre-cache inverses to avoid costly multiplication!!!
-        self.inv_vprll_loc_abs = 1. / np.maximum(1e-99, np.abs(self.vprll_loc))
-        self.inv_tbounce4th = 1. / np.maximum(1e-99, np.abs(self.tbounce4th))
-
-        return
-
-    def bounce_average(self, x, norm=True):
-        """
-        Average over one-fourth(!) of an orbit for trapped particles,
-        which is equivalent to one-half for passing particles.
-
-        Input:
-            x = shape (vperp, vprll, s)
-        Return:
-            shape (vperp, vprll)
-        """
-        try:
-            _ = self.ssamp
-        except:
-            raise Exception("ERROR: need to call prepare_bounce_average(...)")
-
-        sp, fld = (self.species, self.field)
-        assert x.shape[-1] == self.ssamp.shape[-1]
-        assert len(x.shape) == 3
-
-        # FOLLOWING CALCULATIONS ARE ALL DIMENSIONFUL
-        # TODO convert to dimensionless -ATr,2025nov03
-
-        # inherit datatype from integrand...
-        result = np.empty(sp.df.shape, dtype=x.dtype)
-
-        E = self.E[...,np.newaxis]  # should be shallow copy
-        mu = self.mu[...,np.newaxis]  # for easier broadcasting
-        ssamp = self.ssamp  # (vperp,vprll,NS_RESOLUTION) grid
-        Bsamp = self.Bmag   # (vperp,vprll,NS_RESOLUTION) grid
-
-        # NOTE: the limit vprll -> 0 requires some care to handle singularity
-        # Got it with help from ChatGPT, for the case of B''(s=0) nonzero...
-        # For case of B''(s=0) zero, B''''(s=0) nonzero, then I need to
-        # retrace the singularity-handling procedure...
-        # WARNING it still breaks at vperp_vec -> 0
-        # --ATr,2025nov06
-
-        pitch90 = (sp.vprll_vec == 0)
-        muzero = (sp.vperp_vec == 0)
-
-        if np.any(pitch90):
-            assert np.where(pitch90)[0].size == 1
-            jj = np.where(pitch90)[0][0]
-
-            # assume all grids are (vperp, vprll, s)
-            #integrand = x / ( 2*(E - mu*Bsamp)/sp.mass )**0.5
-            #result[:] = np.trapezoid(integrand, ssamp, axis=-1)
-
-            # enforce sqrt argument >=0
-            Eprll = np.maximum(E - mu*Bsamp, 0.)
-            denom = ( 2*Eprll/sp.mass )**0.5
-
-            # limiting form of bounce-average integral near the singularity,
-            # valid for the case x=1, but TODO MAY NOT BE CORRECT FOR x(s)
-            # spatially varying........ --ATr,2025nov06
-            if x.shape[1] == self.ssamp.shape[1]:  # computed x on full v_parallel grid
-
-                # handle points "left" of singularity
-                if jj > 0:
-                    _integrand = x[:,:jj] / denom[:,:jj]
-                    result[:,:jj] = np.trapezoid(_integrand, ssamp[:,:jj], axis=-1)
-
-                # handle singularity v_parallel = 0
-                if np.any(muzero):
-                    assert np.where(muzero)[0].size == 1
-                    ii = np.where(muzero)[0][0]
-
-                    result[ii,jj] = np.inf  # to be overriden
-
-                    result[~muzero,jj] = (
-                        # cannot use [~muzero,jj,0] b/c mixing selector functions
-                        (x[...,0])[~muzero,jj]
-                        * np.pi/2 * (sp.mass / self.dB_ds2_origin)**0.5
-                        / (self.mu[~muzero,jj])**0.5
-                    )
-
-                # handle points "right" of singularity
-                if jj < (sp.vprll_vec.size - 1):
-                    _integrand = x[:,(jj+1):] / denom[:,(jj+1):]
-                    result[:,(jj+1):] = np.trapezoid(_integrand, ssamp[:,(jj+1):], axis=-1)
-
-            # UNUSED code branch will soon be deprecated/eliminated
-            # --ATr,2026mar12
-
-            #elif x.shape[1] == 1:  # x is independent of v_parallel, we broadcast along coordinate
-            #    # TODO handle ugly divide by zero warning -ATr,2025nov06
-            #    result[:,jj] = (
-            #        x[:,0,0]
-            #        * np.pi/2 * (sp.mass / self.dB_ds2_origin)**0.5 / (self.mu[:,jj])**0.5
-            #    )
-
-            else:
-                raise Exception('got bad x shape {}'.format(x.shape))
-        else:
-            # assume all grids are (vperp, vprll, s)
-            integrand = x / ( 2*(E - mu*Bsamp)/sp.mass )**0.5
-            result[:] = np.trapezoid(integrand, ssamp, axis=-1)
-
-        if norm:
-            result *= self.inv_tbounce4th
-
-        # handle the zero point specially
-        # important that this comes AFTER the "nominal" norm factor is applied
-        # TODO cleanup warning messages related to this!!!!! --ATr,2025nov06
-        if np.any(pitch90) and np.any(muzero):
-            assert np.where(muzero)[0].size == 1
-            assert np.where(pitch90)[0].size == 1
-            ii = np.where(muzero)[0][0]
-            jj = np.where(pitch90)[0][0]
-
-            # handle broadcasting cases
-            # TODO ugly ugly ugly -ATr,2025nov06
-            if x.shape[0] == self.ssamp.shape[0] and x.shape[1] == self.ssamp.shape[1]:
-                x_singular = x[ii,jj,0]
-            elif x.shape[0] == 1                 and x.shape[1] == self.ssamp.shape[1]:
-                x_singular = x[0,jj,0]
-            elif x.shape[0] == self.ssamp.shape[0] and x.shape[1] == 1:
-                x_singular = x[ii,0,0]
-            elif x.shape[0] == 1                   and x.shape[1] == 1:
-                x_singular = x[0,0,0]
-            else:
-                raise Exception('got bad x shape {}'.format(x.shape))
-
-            if norm:
-                # force to the moment's value at s=0 at singular point??
-                result[ii,jj] = x_singular
-            else:
-                # raw calculation of bounce integral which blows up
-                # which I currently only use to obtain the bounce time with x=1
-                if x_singular == 1.:
-                    # we are calculating the bounce time
-                    # so just look for max bounce time on grid which should be
-                    # from adjoining cells on (vperp,vprll) mesh
-                    rmax = np.amax( result[ np.isfinite(result) ] )
-                    result[ii,jj] = min(self.TBOUNCE4TH_MAX, rmax)
-                else:
-                    # explicitly get neighboring cells
-                    # vperp=0 is assumed to be the smallest point on mesh
-                    assert ii == 0
-                    # can we safely index into neighboring points on vprll mesh?
-                    assert jj > 0 and jj < len(sp.vprll_vec)-1
-                    # TODO stupid stupid hack --ATr,2025nov06
-
-                    # when passing in x != 0, it could have arbitrary
-                    # dependence on (s,vperp,vprll) so we don't know where the
-                    # maximum lives
-                    # THEREFORE, cannot use max(Result) like before
-                    # we need to look at the neighboring cells in velocity space
-                    # instead.  I am not sure if i am weighting correctly.
-
-                    # I don't expect to use this code branch alot because
-                    # usually, when computing bounce averages, we divide out
-                    # the normalization.
-                    # I think my hacky fix / ceiling should work, but there's
-                    # no physics-motivated reason to use it.
-                    # expect it may only be used during debugging
-
-                    xmax_neighbor = np.amax([  # don't use nanmax b/c if you get nan, something is wrong
-                            x[ii,  jj-1,0],  # left in vprll axis
-                            x[ii,  jj+1,0],  # right in vprll axis
-                            x[ii+1,jj  ,0],  # up in vperp axis
-                            x[ii+1,jj-1,0],  # diagonal up left
-                            x[ii+1,jj+1,0],  # diagonal up right
-                    ])
-                    rmax_neighbor = np.amax([  # don't use nanmax b/c if you get nan, something is wrong
-                            result[ii,  jj-1],  # left in vprll axis
-                            result[ii,  jj+1],  # right in vprll axis
-                            result[ii+1,jj  ],  # up in vperp axis
-                            result[ii+1,jj-1],  # diagonal up left
-                            result[ii+1,jj+1],  # diagonal up right
-                    ])
-                    result[ii,jj] = xmax_neighbor * min(self.TBOUNCE4TH_MAX,
-                                                        rmax_neighbor/xmax_neighbor)
-                    raise Exception('this code branch should only be used for debugging -ATr,2025nov06')
-
-        return result
-
-    def bounce_average_norm_raw(self, x, norm=True):
-        """
-        Average over one-fourth(!) of an orbit for trapped particles,
-        which is equivalent to one-half for passing particles.
-
-        Remove safety checks and conditionals to go as fast as possible
-
-        Input:
-            x = np.ndarray shape (vperp, vprll, s)
-        Return:
-            np.ndarray shape (vperp, vprll) holding normalized bounce-average
-            of x
-        """
-
-        _t0 = time.perf_counter()
-
-        integrand = x * self.inv_vprll_loc_abs  # (vperp,vprll,s) grid
-
-        _t1 = time.perf_counter()
-
-        result = np.trapezoid(integrand, self.ssamp, axis=-1)
-        result *= self.inv_tbounce4th
-
-        _t2 = time.perf_counter()
-
-        pitch90 = (self.species.vprll_vec == 0)
-        muzero = (self.species.vperp_vec == 0)
-        #assert np.where(pitch90)[0].size == 1
-        #assert np.where(muzero)[0].size == 1
-        if np.any(pitch90):
-            jj = np.where(pitch90)[0][0]
-
-            # limiting form of bounce-average integral near the singularity,
-            # valid for the case x=1, but TODO MAY NOT BE CORRECT FOR x(s)
-            # spatially varying........ --ATr,2025nov06
-
-            # handle singularity v_parallel = 0
-            result[~muzero,jj] = (
-                # cannot use [~muzero,jj,0] b/c mixing selector functions
-                (x[...,0])[~muzero,jj]
-                * np.pi/2 * (self.species.mass / self.dB_ds2_origin)**0.5
-                / (self.mu[~muzero,jj])**0.5
-            ) * self.inv_tbounce4th[~muzero,jj]
-
-            # handle origin v_parallel = v_perp = 0
-            # force to the moment's value at s=0 at singular point??
-            #if np.any(muzero):
-            #    ii = np.where(muzero)[0][0]
-            #    result[ii,jj] = x[ii,jj,0]
-            result[muzero,jj] = x[muzero,jj,0]
-
-        _t3 = time.perf_counter()
-
-        self.time_bavg_setup += _t1 - _t0
-        self.time_bavg_trapz += _t2 - _t1
-        self.time_bavg_singu += _t3 - _t2
-
-        return result
-
-    def bounce_average_njit(self, x, norm=True):
-        """
-        Average over one-fourth(!) of an orbit for trapped particles,
-        which is equivalent to one-half for passing particles.
-        Add numba JIT compilation to try to speed up loops.
-
-        Input:
-            x = shape (s, vperp, vprll)
-        Return:
-            shape (vperp, vprll)
-        """
-        return _bounce_average_njit_kernel(
-                x_grid         = x,
-                Bsamp_grid     = self.Bmag,
-                s_grid         = self.ssamp,
-                E_grid         = self.E,
-                mu_grid        = self.mu,
-                vperp_vec      = self.species.vperp_vec,
-                vprll_vec      = self.species.vprll_vec,
-                mass           = self.species.mass,
-                dB_ds2_origin  = self.dB_ds2_origin,
-                tbounce4th     = self.tbounce4th,
-                tbounce4th_max = self.TBOUNCE4TH_MAX,
-                norm           = norm
-        )
 
     def chi_GK(self, epsilonN, ns, Gforce, Teff_ceiling=None, method='expand',
                enable_Upsilon=False, expand_order=1):
@@ -1563,7 +1172,7 @@ class BounceAvgESPerp(object):
         dF0_dEperp = dF0_dEperp[:,:,np.newaxis]
         # derived gradients (using chain rule)
         dF0_dmu_B0 = -dF0_dEprll + dF0_dEperp
-        dF0_dmu_B  =  dF0_dmu_B0 / self.B_B0  # this varies along field line!
+        dF0_dmu_B  =  dF0_dmu_B0 / self.orbit.B_B0  # this varies along field line!
         dF0_dE     =  dF0_dEprll  # alias, dF0/dE |_µ = dF0/d(Eprll) |_{Eperp}
 
         # inverse temperature, shape (vperp,vprll,s), normalized to Tperp so
@@ -1614,35 +1223,35 @@ class BounceAvgESPerp(object):
         # and I think it's valid even in non-paraxial limit.
         # --ATr,2026april21
 
-        #v_star = 0.5 * (-epsN) * Teff / np.sqrt(self.B_B0)  # OLD 2025fall/2026spring less accurate
-        v_star = 0.5 * (-epsN) * Teff * self.r_r0 * np.sign(sp.q)
+        #v_star = 0.5 * (-epsN) * Teff / np.sqrt(self.orbit.B_B0)  # OLD 2025fall/2026spring less accurate
+        v_star = 0.5 * (-epsN) * Teff * self.orbit.r_r0 * np.sign(sp.q)
         # if Bz < 0, v_* flips direction and \psi increases radially inwards
         # query bhat_z at s=0 (midplane), at any point in velocity space
-        v_star *= np.sign(self.bhat[2,0,0,0])
+        v_star *= np.sign(self.orbit.bhat[2,0,0,0])
 
         # GRAVITY DRIFT VELOCITY (dimensionless)
         # v_grav/v_th = Gforce / v_th,perp / Omci(0) * Omci(0)/Omci(s)
-        v_grav = G / self.B_B0
+        v_grav = G / self.orbit.B_B0
         # if Bz < 0, v_grav flips direction
         # query bhat_z at s=0 (midplane), at any point in velocity space
-        v_grav *= np.sign(self.bhat[2,0,0,0])
+        v_grav *= np.sign(self.orbit.bhat[2,0,0,0])
 
         # BACKGROUND F0 VELOCITY (dimensionless)
         # encodes all the boltzmann response drifts...
         v_bkg = v_star + v_grav
 
         # GYROCENTER DRIFT VELOCITY (dimensionless)
-        v_drift = np.zeros( self.ssamp.shape, dtype=np.float64)
+        v_drift = np.zeros( self.orbit.ssamp.shape, dtype=np.float64)
         # external gravitational force drift
         v_drift += v_grav
         # grad(B) drift
         # Pre-cached drift velocity array shape = (3,vperp,vprll,NS_RESOLUTION)
         # in my axisymmetric slab approx, only use x (poloidal) component
-        v_drift += (self.v_gradB[0,...]/sp.vth_perp)
+        v_drift += (self.orbit.v_gradB[0,...]/sp.vth_perp)
         # curvature drift
         # Pre-cached drift velocity array shape = (3,vperp,vprll,NS_RESOLUTION)
         # in my axisymmetric slab approx, only use x (poloidal) component
-        v_drift += (self.v_curv [0,...]/sp.vth_perp)
+        v_drift += (self.orbit.v_curv [0,...]/sp.vth_perp)
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # assemble "Boltzmann B-field drift freq" using four "kernels"
@@ -1652,9 +1261,9 @@ class BounceAvgESPerp(object):
         # wavevector, flux-surface-normal unit vectors
         # to help construct "Boltzmann B-field drift freq"
         # shape (3,vperp,vprll,NS_RESOLUTION)
-        khat = np.zeros_like(self.bhat)
+        khat = np.zeros_like(self.orbit.bhat)
         khat[0] = 1.  # poloidal direction along x in cartesian grid
-        psihat = np.cross(self.bhat, khat, axisa=0,axisb=0,axisc=0)
+        psihat = np.cross(self.orbit.bhat, khat, axisa=0,axisb=0,axisc=0)
 
         # construct "anisotropy temperature" which measures
         # pitch-angle dependent structure
@@ -1677,22 +1286,22 @@ class BounceAvgESPerp(object):
         # --ATr,2026may09
         # omega_ups1 at vperp=0 requires special handling to avoid division
         # by zero, see farther below
-        _sel = self.vperp_loc != 0
-        om_ups1_kernel = np.zeros_like(self.ssamp)
+        _sel = self.orbit.vperp_loc != 0
+        om_ups1_kernel = np.zeros_like(self.orbit.ssamp)
         om_ups1_kernel[_sel] = (
-                       2 * self.vprll_loc[_sel]**2 / self.vperp_loc[_sel]
-                       * np.sum(psihat * self.dbhat_ds, axis=0)[_sel]
+                       2 * self.orbit.vprll_loc[_sel]**2 / self.orbit.vperp_loc[_sel]
+                       * np.sum(psihat * self.orbit.dbhat_ds, axis=0)[_sel]
         )
         del _sel
-        om_ups2_kernel = ( 2 * self.vperp_loc / self.Bmag
-                           * np.sum(psihat * self.gradB, axis=0) )
+        om_ups2_kernel = ( 2 * self.orbit.vperp_loc / self.orbit.Bmag
+                           * np.sum(psihat * self.orbit.gradB, axis=0) )
         # TODO om_ups3 uses the identity
         # \hat{\psi}\hat{\psi}\cddot\del\hat{b} = div(\hat{b})
         # which is only valid for axisymmetric B field --ATr,2026may09
-        om_ups3_kernel = ( 1j * self.vprll_loc / self.Bmag
-                           * np.sum(self.bhat * self.gradB, axis=0) )
-        om_ups4_kernel = ( - 0.5 * 1j * self.vprll_loc / self.Bmag
-                           * np.sum(self.bhat * self.gradB, axis=0) )
+        om_ups3_kernel = ( 1j * self.orbit.vprll_loc / self.orbit.Bmag
+                           * np.sum(self.orbit.bhat * self.orbit.gradB, axis=0) )
+        om_ups4_kernel = ( - 0.5 * 1j * self.orbit.vprll_loc / self.orbit.Bmag
+                           * np.sum(self.orbit.bhat * self.orbit.gradB, axis=0) )
         # attach anisotropy prefactor
         # and make dimensionless, normalize to _signed_ Omega_cs(s=0)
         om_ups1_kernel *= Lam_Ups / sp.Omcs(self.B0)
@@ -1747,7 +1356,7 @@ class BounceAvgESPerp(object):
 
             # bounce-average reduces (vperp,vprll) -> (vperp,vprll,s)
             # then extend (vperp,vprll) -> (k,Re(ω),Im(ω),vperp,vprll)
-            inv_Teff_BA = self.bounce_average_njit( inv_Teff )
+            inv_Teff_BA = self.orbit.bounce_average_njit( inv_Teff )
             inv_Teff_BA = inv_Teff_BA[np.newaxis,np.newaxis,np.newaxis,:,:]
 
             mom += sp.moment( inv_Teff_BA )
@@ -1757,13 +1366,13 @@ class BounceAvgESPerp(object):
             # to properly treat resonant denominator AND bounce averaging
 
             # pre-alloc for bounce average and other compute
-            om_bkg   = np.empty_like(self.ssamp, dtype=np.complex128)
-            om_drift = np.empty_like(self.ssamp, dtype=np.complex128)
-            om_ups1  = np.empty_like(self.ssamp, dtype=np.complex128)
-            om_ups2  = np.empty_like(self.ssamp, dtype=np.complex128)
-            om_ups3  = np.empty_like(self.ssamp, dtype=np.complex128)
-            om_ups4  = np.empty_like(self.ssamp, dtype=np.complex128)
-            om_ups   = np.empty_like(self.ssamp, dtype=np.complex128)
+            om_bkg   = np.empty_like(self.orbit.ssamp, dtype=np.complex128)
+            om_drift = np.empty_like(self.orbit.ssamp, dtype=np.complex128)
+            om_ups1  = np.empty_like(self.orbit.ssamp, dtype=np.complex128)
+            om_ups2  = np.empty_like(self.orbit.ssamp, dtype=np.complex128)
+            om_ups3  = np.empty_like(self.orbit.ssamp, dtype=np.complex128)
+            om_ups4  = np.empty_like(self.orbit.ssamp, dtype=np.complex128)
+            om_ups   = np.empty_like(self.orbit.ssamp, dtype=np.complex128)
             result_BA = np.empty_like(sp.df, dtype=np.complex128)
 
             # avoid type conversions in tight loops;
@@ -1783,24 +1392,24 @@ class BounceAvgESPerp(object):
                 # k_perp norm uses abs(Omega_cs).
                 # Omit for J0, J2, Jarg*J1 (even functions of k_perp).
                 # Need charge sign factor to work with k normalization.
-                om_bkg[:]   = v_bkg   * kv / self.r_r0 * np.sign(sp.q)
-                om_drift[:] = v_drift * kv / self.r_r0 * np.sign(sp.q)
+                om_bkg[:]   = v_bkg   * kv / self.orbit.r_r0 * np.sign(sp.q)
+                om_drift[:] = v_drift * kv / self.orbit.r_r0 * np.sign(sp.q)
 
                 om_ups1[:] =         J1_J0[ii,0,0,:,:,np.newaxis] * om_ups1_kernel * np.sign(sp.q)
                 # Use Taylor expansion of J_1(..) because J_1 / v_\perp
                 # -> 0/0 is indefinite
-                om_ups1[self.vperp_loc==0] = (
-                        (kk5d / J0)[ii,0,0,:,:,np.newaxis] * Lam_Ups * self.vprll_loc**2
-                        * np.sum(psihat * self.dbhat_ds, axis=0)
+                om_ups1[self.orbit.vperp_loc==0] = (
+                        (kk5d / J0)[ii,0,0,:,:,np.newaxis] * Lam_Ups * self.orbit.vprll_loc**2
+                        * np.sum(psihat * self.orbit.dbhat_ds, axis=0)
                         / sp.vth_perp / abs(sp.Omcs(self.B0))  # "standard" normalization
                         * np.sign(sp.q)  # re-attach the charge sign
-                        * self.r_r0      # because "plain" k_perp/Omega0 appears without
+                        * self.orbit.r_r0# because "plain" k_perp/Omega0 appears without
                                          # v_perp factor, it's no longer bounce invariant,
                                          # we need to reattach B(s)/B0 factor
                                          # REPLACED WITH r(s)/r(0) --ATr,2026apr21
                         # This assignment must follow (cannot precede)
                         # the om_ups1[:] = ... statement
-                )[self.vperp_loc==0]  # notice duplicate selector needed here
+                )[self.orbit.vperp_loc==0]  # notice duplicate selector needed here
                 om_ups2[:] =            J1_J0 [ii,0,0,:,:,np.newaxis] * om_ups2_kernel * np.sign(sp.q)
                 om_ups3[:] = (      4 * J2_J0 [ii,0,0,:,:,np.newaxis] * om_ups3_kernel
                               + (Jarg * J1_J0)[ii,0,0,:,:,np.newaxis] * om_ups3_kernel )
@@ -1844,16 +1453,16 @@ class BounceAvgESPerp(object):
                 #    df              = self.species.df,
                 #    ########################
                 #    # below args passed to _bounce_average_njit_kernel
-                #    Bsamp_grid     = self.Bmag,
-                #    s_grid         = self.ssamp,
-                #    E_grid         = self.E,
-                #    mu_grid        = self.mu,
+                #    Bsamp_grid     = self.orbit.Bmag,
+                #    s_grid         = self.orbit.ssamp,
+                #    E_grid         = self.orbit.E,
+                #    mu_grid        = self.orbit.mu,
                 #    vperp_vec      = self.species.vperp_vec,
                 #    vprll_vec      = self.species.vprll_vec,
                 #    mass           = self.species.mass,
-                #    dB_ds2_origin  = self.dB_ds2_origin,
-                #    tbounce4th     = self.tbounce4th,
-                #    tbounce4th_max = self.TBOUNCE4TH_MAX,
+                #    dB_ds2_origin  = self.orbit.dB_ds2_origin,
+                #    tbounce4th     = self.orbit.tbounce4th,
+                #    tbounce4th_max = self.orbit.TBOUNCE4TH_MAX,
                 #)
 
                 mom[ii,:,:] += result
@@ -1876,7 +1485,7 @@ class BounceAvgESPerp(object):
 
             # bounce-average reduces (vperp,vprll) -> (vperp,vprll,s)
             # then extend (vperp,vprll) -> (k,Re(ω),Im(ω),vperp,vprll)
-            inv_Teff_BA = self.bounce_average_njit( inv_Teff )
+            inv_Teff_BA = self.orbit.bounce_average_njit( inv_Teff )
             inv_Teff_BA = inv_Teff_BA[np.newaxis,np.newaxis,np.newaxis,:,:]
 
             mom += sp.moment( inv_Teff_BA )
@@ -1905,7 +1514,7 @@ class BounceAvgESPerp(object):
                 inv_Teff        = inv_Teff,
                 v_bkg           = v_bkg,
                 v_drift         = v_drift,
-                r_r0            = self.r_r0,
+                r_r0            = self.orbit.r_r0,
                 # for resolving sign of omega_drift, omega_bkg
                 sp_q            = sp.q,
                 # TODO omega_Upsilon calculation will need the following...
@@ -1941,7 +1550,7 @@ class BounceAvgESPerp(object):
             def _bavgwt(x):
                 """Input: x = shape (vperp,vprll,s)"""
                 return (
-                    self.bounce_average_njit( inv_Teff * x )
+                    self.orbit.bounce_average_njit( inv_Teff * x )
                     [np.newaxis,np.newaxis,np.newaxis,:,:]
                 )
 
@@ -1950,8 +1559,8 @@ class BounceAvgESPerp(object):
             # The (r/r0) factors account for kperp changing along fluxtube,
             # with r = cylindrical radius, azimuthal mode number held constant
             # Need charge sign factor to work with k normalization.
-            ωD = v_drift / self.r_r0 * np.sign(sp.q)
-            ωbkg = v_bkg / self.r_r0 * np.sign(sp.q)
+            ωD = v_drift / self.orbit.r_r0 * np.sign(sp.q)
+            ωbkg = v_bkg / self.orbit.r_r0 * np.sign(sp.q)
 
             # Construct all the bounce averages
             inv_Teff_BA       =           _bavgwt( 1. )
@@ -1969,11 +1578,11 @@ class BounceAvgESPerp(object):
             # being careful/crafty to avoid slamming memory with 4D arrays
             # TODO omega_ups1 treatment of vperp=0 line is not correct
             # but this code is ugly enough as it is
-            #ωups1_Teff_BA  = self.bounce_average( om_ups1_kernel * inv_Teff )
-            #ωups2_Teff_BA  = self.bounce_average( om_ups2_kernel * inv_Teff )
-            #ωups3a_Teff_BA = self.bounce_average( om_ups3_kernel * inv_Teff )
-            #ωups3b_Teff_BA = self.bounce_average( om_ups3_kernel * inv_Teff )
-            #ωups4_Teff_BA  = self.bounce_average( om_ups4_kernel * inv_Teff )
+            #ωups1_Teff_BA  = self.orbit.bounce_average( om_ups1_kernel * inv_Teff )
+            #ωups2_Teff_BA  = self.orbit.bounce_average( om_ups2_kernel * inv_Teff )
+            #ωups3a_Teff_BA = self.orbit.bounce_average( om_ups3_kernel * inv_Teff )
+            #ωups3b_Teff_BA = self.orbit.bounce_average( om_ups3_kernel * inv_Teff )
+            #ωups4_Teff_BA  = self.orbit.bounce_average( om_ups4_kernel * inv_Teff )
             ####
             #ωups1_Teff_BA  = ωups1_Teff_BA [:,:,np.newaxis,np.newaxis,np.newaxis]
             #ωups2_Teff_BA  = ωups2_Teff_BA [:,:,np.newaxis,np.newaxis,np.newaxis]
@@ -2109,15 +1718,15 @@ class BounceAvgESPerp(object):
 
                     _t2 = time.perf_counter()
 
-                    #result_BA[:] = self.bounce_average( x_grid )        # (vperp,vprll)
+                    #result_BA[:] = self.orbit.bounce_average( x_grid )        # (vperp,vprll)
 
                     # njit is definitely slower...
-                    #result_BA_re[:] = self.bounce_average_njit( x_grid.real )  # (vperp,vprll)
-                    #result_BA_im[:] = self.bounce_average_njit( x_grid.imag )  # (vperp,vprll)
+                    #result_BA_re[:] = self.orbit.bounce_average_njit( x_grid.real )  # (vperp,vprll)
+                    #result_BA_im[:] = self.orbit.bounce_average_njit( x_grid.imag )  # (vperp,vprll)
                     #result_BA[:] = result_BA_re + 1j*result_BA_im
 
                     # no safety checks; remove conditionals, redundant compute
-                    result_BA[:] = self.bounce_average_norm_raw( x_grid )        # (vperp,vprll)
+                    result_BA[:] = self.orbit.bounce_average_norm_raw( x_grid )        # (vperp,vprll)
 
                     _t3 = time.perf_counter()
 
@@ -2142,9 +1751,9 @@ class BounceAvgESPerp(object):
         printn(f'     ... grid    ... {self.time_setup_omloop_grid:.6f}')
         printn(f'     ... J0sq    ... {self.time_setup_omloop_J0sq:.6f}')
         printn(f'time bavg        {self.time_bavg      :.6f}')
-        printn(f'     ... setup   ... {self.time_bavg_setup:.6f}')
-        printn(f'     ... trapz   ... {self.time_bavg_trapz:.6f}')
-        printn(f'     ... singu   ... {self.time_bavg_singu:.6f}')
+        printn(f'     ... setup   ... {self.orbit.time_bavg_setup:.6f}')
+        printn(f'     ... trapz   ... {self.orbit.time_bavg_trapz:.6f}')
+        printn(f'     ... singu   ... {self.orbit.time_bavg_singu:.6f}')
         printn(f'time mom         {self.time_mom       :.6f}')
         printn(f'time tot         {self.time_tot       :.6f}')
 
@@ -2159,9 +1768,10 @@ class BounceAvgESPerp(object):
         self.time_setup_omloop_grid = 0
         self.time_setup_omloop_J0sq = 0
         self.time_bavg = 0
-        self.time_bavg_setup = 0
-        self.time_bavg_trapz = 0
-        self.time_bavg_singu = 0
+        #self.orbit.time_bavg_setup = 0
+        #self.orbit.time_bavg_trapz = 0
+        #self.orbit.time_bavg_singu = 0
+        self.orbit._reset_timers()  # for bounce_average_norm_raw(...) timers
         self.time_mom = 0
         self.time_tot = 0
 
@@ -2186,7 +1796,7 @@ class BounceAvgESPerp(object):
                 # bounce-average integrand, shape (vperp,vprll,s)
                 x_grid = (omv - om_bkg) / (omv - om_drift) * minus_J0sq_Teff
                 # bounce-average integral, shape (vperp,vprll)
-                result_BA[:] = self.bounce_average( x_grid )
+                result_BA[:] = self.orbit.bounce_average( x_grid )
                 # gyrotropic h term's contribution to susceptibility
                 result[ii,jj] = self.species.moment( result_BA )
             printn('done omega_re ', ii, 'of', self.omega_re_vec.size)
@@ -2212,8 +1822,8 @@ class BounceAvgESPerp(object):
                 # bounce-average integrand, shape (vperp,vprll,s)
                 x_grid = (omv - om_bkg) / (omv - om_drift) * minus_J0sq_Teff
                 # bounce-average integral, shape (vperp,vprll)
-                result_BA_re[:] = self.bounce_average_njit( x_grid.real )
-                result_BA_im[:] = self.bounce_average_njit( x_grid.imag )
+                result_BA_re[:] = self.orbit.bounce_average_njit( x_grid.real )
+                result_BA_im[:] = self.orbit.bounce_average_njit( x_grid.imag )
                 # gyrotropic h term's contribution to susceptibility
                 result[ii,jj] = self.species.moment( result_BA_re + 1j*result_BA_im )
             printn('done omega_re ', ii, 'of', self.omega_re_vec.size)
