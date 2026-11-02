@@ -1119,12 +1119,9 @@ class BounceAvgESPerp(object):
                            b/c integral becomes "more" separable, so we don't
                            need explicit parallelization of
                            [k, Re(ω), Im(ω); vperp, vprll; s] integrals, but we
-                           miss correct physics at large drift speeds, and we
-                           also cannot evaluate the effect of new omega_Upsilon
-                           curvature x dF/dµ drift frequency term
+                           miss correct physics at large drift speeds
 
             enable_Upsilon = enable experimental new drift term?
-                             WARNING not fully implemented, may not work!!
 
             expand_order = highest order in (ωD/ω) to use with method='expand',
                 no effect for other computation methods
@@ -1236,11 +1233,11 @@ class BounceAvgESPerp(object):
         # query bhat_z at s=0 (midplane), at any point in velocity space
         v_grav *= np.sign(self.orbit.bhat[2,0,0,0])
 
-        # BACKGROUND F0 VELOCITY (dimensionless)
-        # encodes all the boltzmann response drifts...
+        # BACKGROUND F0 VELOCITY (dimensionless), on RHS of GK equation
+        # encodes all the boltzmann response drifts
         v_bkg = v_star + v_grav
 
-        # GYROCENTER DRIFT VELOCITY (dimensionless)
+        # GYROCENTER DRIFT VELOCITY (dimensionless), on LHS of GK equation
         v_drift = np.zeros( self.orbit.ssamp.shape, dtype=np.float64)
         # external gravitational force drift
         v_drift += v_grav
@@ -1282,62 +1279,76 @@ class BounceAvgESPerp(object):
         #Lam_Ups = dF0_dmu_B / (dF0_dE + dF0_dmu_B)
         #Lam_Ups[~np.isfinite(Lam_Ups)] = 0.  # stupid hack
 
-        # -----------------------------------------------------
-        # TODO EXPRESSIONS NEED TO BE CHECKED, ONLY FOR TESTING
-        # --ATr,2026mar09
-        # omega_ups1 at vperp=0 requires special handling to avoid division
-        # by zero, see farther below
-#        _sel = self.orbit.vperp_loc != 0
-#        om_ups1_kernel = np.zeros_like(self.orbit.ssamp)
-#        om_ups1_kernel[_sel] = (
-#                       2 * self.orbit.vprll_loc[_sel]**2 / self.orbit.vperp_loc[_sel]
-#                       * np.sum(psihat * self.orbit.dbhat_ds, axis=0)[_sel]
-#        )
-#        del _sel
-#        om_ups2_kernel = ( 2 * self.orbit.vperp_loc / self.orbit.Bmag
-#                           * np.sum(psihat * self.orbit.gradB, axis=0) )
-#        # TODO om_ups3 uses the identity
-#        # \hat{\psi}\hat{\psi}\cddot\del\hat{b} = div(\hat{b})
-#        # which is only valid for axisymmetric B field --ATr,2026may09
-#        om_ups3_kernel = ( 1j * self.orbit.vprll_loc / self.orbit.Bmag
-#                           * np.sum(self.orbit.bhat * self.orbit.gradB, axis=0) )
-#        om_ups4_kernel = ( - 0.5 * 1j * self.orbit.vprll_loc / self.orbit.Bmag
-#                           * np.sum(self.orbit.bhat * self.orbit.gradB, axis=0) )
-#        # attach anisotropy prefactor
-#        # and make dimensionless, normalize to _signed_ Omega_cs(s=0)
-#        om_ups1_kernel *= Lam_Ups / sp.Omcs(self.B0)
-#        om_ups2_kernel *= Lam_Ups / sp.Omcs(self.B0)
-#        om_ups3_kernel *= Lam_Ups / sp.Omcs(self.B0)
-#        om_ups4_kernel *= Lam_Ups / sp.Omcs(self.B0)
+        if enable_Upsilon:
 
-        # --------------------------------------------------
-        # ATTEMPT NUMBER 2 after fixing multiple sign errors
-        # omega_ups1 at vperp=0 requires care to avoid division by zero
-        _sel = self.orbit.vperp_loc != 0
-        om_ups1_kernel = np.zeros_like(self.orbit.ssamp)
-        om_ups1_kernel[_sel] = (
-                2 * self.orbit.vprll_loc[_sel]**2 / self.orbit.vperp_loc[_sel]
-                  * np.sum(psihat * self.orbit.dbhat_ds, axis=0)[_sel]
-        )
-        del _sel
-        om_ups2_kernel = ( self.orbit.vperp_loc
-                           * np.sum(psihat * self.orbit.gradB, axis=0)
-                           / self.orbit.Bmag )
-        # NOTE om_ups3 uses the identity
-        # \hat{\psi}\hat{\psi}\cddot\del\hat{b} = div(\hat{b})
-        # which is only valid for axisymmetric B field --ATr,2026mar09
-        om_ups3_kernel = ( -1j * self.orbit.vprll_loc
-                           * np.sum(self.orbit.bhat * self.orbit.gradB, axis=0)
-                           / self.orbit.Bmag )
-        om_ups4_kernel = ( -1j * self.orbit.vprll_loc
-                           * np.sum(self.orbit.bhat * self.orbit.gradB, axis=0)
-                           / self.orbit.Bmag )
-        # attach anisotropy prefactor
-        # and make dimensionless, normalize to _signed_ Omega_cs(s=0)
-        om_ups1_kernel *= -0.5 * Lam_Ups / sp.Omcs(self.B0)
-        om_ups2_kernel *= -0.5 * Lam_Ups / sp.Omcs(self.B0)
-        om_ups3_kernel *= -0.5 * Lam_Ups / sp.Omcs(self.B0)
-        om_ups4_kernel *= -0.5 * Lam_Ups / sp.Omcs(self.B0)
+            # -----------------------------------------------------
+            # ATTEMPT NUMBER 1 --ATr,2026mar09
+            # omega_ups1 at vperp=0 requires special handling to avoid division
+            # by zero, see farther below
+
+            ##  _sel = self.orbit.vperp_loc != 0
+            ##  om_ups1_kernel = np.zeros_like(self.orbit.ssamp)
+            ##  om_ups1_kernel[_sel] = (
+            ##                 2 * self.orbit.vprll_loc[_sel]**2 / self.orbit.vperp_loc[_sel]
+            ##                 * np.sum(psihat * self.orbit.dbhat_ds, axis=0)[_sel]
+            ##  )
+            ##  del _sel
+            ##  om_ups2_kernel = ( 2 * self.orbit.vperp_loc / self.orbit.Bmag
+            ##                     * np.sum(psihat * self.orbit.gradB, axis=0) )
+            ##  # TODO om_ups3 uses the identity
+            ##  # \hat{\psi}\hat{\psi}\cddot\del\hat{b} = div(\hat{b})
+            ##  # which is only valid for axisymmetric B field --ATr,2026may09
+            ##  om_ups3_kernel = ( 1j * self.orbit.vprll_loc / self.orbit.Bmag
+            ##                     * np.sum(self.orbit.bhat * self.orbit.gradB, axis=0) )
+            ##  om_ups4_kernel = ( - 0.5 * 1j * self.orbit.vprll_loc / self.orbit.Bmag
+            ##                     * np.sum(self.orbit.bhat * self.orbit.gradB, axis=0) )
+            ##  # attach anisotropy prefactor
+            ##  # and make dimensionless, normalize to _signed_ Omega_cs(s=0)
+            ##  om_ups1_kernel *= Lam_Ups / sp.Omcs(self.B0)
+            ##  om_ups2_kernel *= Lam_Ups / sp.Omcs(self.B0)
+            ##  om_ups3_kernel *= Lam_Ups / sp.Omcs(self.B0)
+            ##  om_ups4_kernel *= Lam_Ups / sp.Omcs(self.B0)
+
+            # --------------------------------------------------
+            # ATTEMPT NUMBER 2 after fixing multiple sign errors -ATr,2026oct
+            # omega_ups1 at vperp=0 requires care to avoid division by zero
+
+            ## _sel = self.orbit.vperp_loc != 0
+            ## om_ups1_kernel = np.zeros_like(self.orbit.ssamp)
+            ## om_ups1_kernel[_sel] = (
+            ##         2 * self.orbit.vprll_loc[_sel]**2 / self.orbit.vperp_loc[_sel]
+            ##           * np.sum(psihat * self.orbit.dbhat_ds, axis=0)[_sel]
+            ## )
+            ## del _sel
+            ## om_ups2_kernel = ( self.orbit.vperp_loc
+            ##                    * np.sum(psihat * self.orbit.gradB, axis=0)
+            ##                    / self.orbit.Bmag )
+            ## # NOTE om_ups3 uses the identity
+            ## # \hat{\psi}\hat{\psi}\cddot\del\hat{b} = div(\hat{b})
+            ## # which is only valid for axisymmetric B field --ATr,2026mar09
+            ## om_ups3_kernel = ( -1j * self.orbit.vprll_loc
+            ##                    * np.sum(self.orbit.bhat * self.orbit.gradB, axis=0)
+            ##                    / self.orbit.Bmag )
+            ## om_ups4_kernel = ( -1j * self.orbit.vprll_loc
+            ##                    * np.sum(self.orbit.bhat * self.orbit.gradB, axis=0)
+            ##                    / self.orbit.Bmag )
+            ## # attach anisotropy prefactor
+            ## # and make dimensionless, normalize to _signed_ Omega_cs(s=0)
+            ## om_ups1_kernel *= -0.5 * Lam_Ups / sp.Omcs(self.B0)
+            ## om_ups2_kernel *= -0.5 * Lam_Ups / sp.Omcs(self.B0)
+            ## om_ups3_kernel *= -0.5 * Lam_Ups / sp.Omcs(self.B0)
+            ## om_ups4_kernel *= -0.5 * Lam_Ups / sp.Omcs(self.B0)
+
+            # --------------------------------------------------
+            # ATTEMPT NUMBER 3 - w/help of Claude Opus 5.5, this recovers
+            # k*rho->0 MHD limit in Z-pinch magnetic field -ATr,2026nov01
+
+            # TODO The 3rd/4th kernels are not as important b/c they bounce average away
+            # for distribution symmetric about v_\prll, and I'm not yet sure I
+            # got all field-parallel terms correct --ATr,2026oct29
+
+            v_bkg += Lam_Ups * (self.orbit.v_gradB[0,...]/sp.vth_perp)
+            v_bkg += Lam_Ups * (self.orbit.v_curv [0,...]/sp.vth_perp)
 
         # -------------------------------------------
         # to make integral tractable,
@@ -1428,7 +1439,9 @@ class BounceAvgESPerp(object):
                     # Omit for J0, J2, Jarg*J1 (even functions of k_perp).
                     # Need charge sign factor to work with k normalization.
 
-                    # FIRST ATTEMPT -ATr,2026 March
+                    # -----------------------------------------------------
+                    # ATTEMPT NUMBER 1 --ATr,2026mar09
+
                     ##  om_ups1[:] =         J1_J0[ii,0,0,:,:,np.newaxis] * om_ups1_kernel * np.sign(sp.q)
                     ##  # Use Taylor expansion of J_1(..) because J_1 / v_\perp
                     ##  # -> 0/0 is indefinite
@@ -1449,28 +1462,38 @@ class BounceAvgESPerp(object):
                     ##                + (Jarg * J1_J0)[ii,0,0,:,:,np.newaxis] * om_ups3_kernel )
                     ##  om_ups4[:] =    (Jarg * J1_J0)[ii,0,0,:,:,np.newaxis] * om_ups4_kernel
 
-                    # SECOND ATTEMPT -ATr,2026 October
+                    # --------------------------------------------------
+                    # ATTEMPT NUMBER 2 after fixing multiple sign errors -ATr,2026oct
                     # still need the charge sign factor for ALL bare "Jarg"
-                    om_ups1[:] = Jarg[ii,0,0,:,:,np.newaxis] * om_ups1_kernel * np.sign(sp.q)
-                    om_ups1[self.orbit.vperp_loc==0] = (
-                            -0.5*Lam_Ups * kk5d[ii,0,0,:,:,np.newaxis]
-                            * 2*self.orbit.vprll_loc**2
-                            * np.sum(psihat * self.orbit.dbhat_ds, axis=0)
-                            / sp.vth_perp / sp.Omcs(self.B0)  # "standard" normalization with signed Omcs
-                            * np.sign(sp.q)  # re-attach the charge sign for kk5d
-                            * self.orbit.r_r0 # because "plain" k_perp/Omega0 appears without
-                                             # v_perp factor, it's no longer bounce invariant,
-                                             # so attach r(s)/r(0) --ATr,2026apr21
-                            # This assignment must follow (cannot precede)
-                            # the om_ups1[:] = ... statement
-                    )[self.orbit.vperp_loc==0]  # notice duplicate selector needed here
-                    om_ups2[:] = (       Jarg[ii,0,0,:,:,np.newaxis]
-                                  + 2 * J1_J0[ii,0,0,:,:,np.newaxis] ) * om_ups2_kernel * np.sign(sp.q)
-                    om_ups3[:] = Jarg[ii,0,0,:,:,np.newaxis] * J1_J0[ii,0,0,:,:,np.newaxis] * om_ups3_kernel
-                    om_ups4[:] = Jarg[ii,0,0,:,:,np.newaxis] * J1_J0[ii,0,0,:,:,np.newaxis] * om_ups4_kernel
 
-                    om_ups [:] = om_ups1 + om_ups2 + om_ups3 + om_ups4
-                    om_bkg += om_ups
+                    ##  om_ups1[:] = Jarg[ii,0,0,:,:,np.newaxis] * om_ups1_kernel * np.sign(sp.q)
+                    ##  om_ups1[self.orbit.vperp_loc==0] = (
+                    ##          -0.5*Lam_Ups * kk5d[ii,0,0,:,:,np.newaxis]
+                    ##          * 2*self.orbit.vprll_loc**2
+                    ##          * np.sum(psihat * self.orbit.dbhat_ds, axis=0)
+                    ##          / sp.vth_perp / sp.Omcs(self.B0)  # "standard" normalization with signed Omcs
+                    ##          * np.sign(sp.q)  # re-attach the charge sign for kk5d
+                    ##          * self.orbit.r_r0 # because "plain" k_perp/Omega0 appears without
+                    ##                           # v_perp factor, it's no longer bounce invariant,
+                    ##                           # so attach r(s)/r(0) --ATr,2026apr21
+                    ##          # This assignment must follow (cannot precede)
+                    ##          # the om_ups1[:] = ... statement
+                    ##  )[self.orbit.vperp_loc==0]  # notice duplicate selector needed here
+                    ##  om_ups2[:] = (       Jarg[ii,0,0,:,:,np.newaxis]
+                    ##                + 2 * J1_J0[ii,0,0,:,:,np.newaxis] ) * om_ups2_kernel * np.sign(sp.q)
+                    ##  om_ups3[:] = Jarg[ii,0,0,:,:,np.newaxis] * J1_J0[ii,0,0,:,:,np.newaxis] * om_ups3_kernel
+                    ##  om_ups4[:] = Jarg[ii,0,0,:,:,np.newaxis] * J1_J0[ii,0,0,:,:,np.newaxis] * om_ups4_kernel
+
+                    ##  om_ups [:] = om_ups1 + om_ups2 + om_ups3 + om_ups4
+                    ##  om_bkg += om_ups
+
+                    # --------------------------------------------------
+                    # ATTEMPT NUMBER 3 - w/help of Claude Opus 5.5, this recovers
+                    # k*rho->0 MHD limit in Z-pinch magnetic field -ATr,2026nov01
+
+                    pass
+
+                # end if(enable_Upsilon)
 
                 # combine the prefactor to plug into bounce integrand
                 # J0sq can be factored out, but cleaner to keep together
@@ -1569,15 +1592,15 @@ class BounceAvgESPerp(object):
                 # for resolving sign of omega_drift, omega_bkg
                 sp_q            = sp.q,
                 # EXPERIMENTAL \omega_\Upsilon
-                enable_Upsilon = enable_Upsilon,
-                om_ups1_kernel = om_ups1_kernel,
-                om_ups2_kernel = om_ups2_kernel,
-                om_ups3_kernel = om_ups3_kernel,
-                om_ups4_kernel = om_ups4_kernel,
-                Lam_Ups        = Lam_Ups,
-                psihat         = psihat,
-                sp_vth_perp    = sp.vth_perp,
-                sp_Omcs        = sp.Omcs(self.B0),
+##                enable_Upsilon = enable_Upsilon,
+##                om_ups1_kernel = om_ups1_kernel,
+##                om_ups2_kernel = om_ups2_kernel,
+##                om_ups3_kernel = om_ups3_kernel,
+##                om_ups4_kernel = om_ups4_kernel,
+##                Lam_Ups        = Lam_Ups,
+##                psihat         = psihat,
+##                sp_vth_perp    = sp.vth_perp,
+##                sp_Omcs        = sp.Omcs(self.B0),
             )
 
             mom += result
@@ -1591,8 +1614,8 @@ class BounceAvgESPerp(object):
         # be very careful about numpy axis positions and broadcasting
         elif method == 'expand':
 
-            if enable_Upsilon:
-                raise NotImplementedError
+##            if enable_Upsilon:
+##                raise NotImplementedError
 
             # Make the J_0^2(...) grid
             vperp_vth = sp.vperp_vec / sp.vth_perp
@@ -1718,15 +1741,15 @@ class BounceAvgESPerp(object):
             # for resolving sign of omega_drift, omega_bkg
             sp_q,       # scalar, species charge
             # EXPERIMENTAL \omega_\Upsilon
-            enable_Upsilon,
-            om_ups1_kernel,
-            om_ups2_kernel,
-            om_ups3_kernel,
-            om_ups4_kernel,
-            Lam_Ups,  # shape (vperp,vprll,1)
-            psihat,  # shape (3,vperp,vprll,s)
-            sp_vth_perp,  # scalar
-            sp_Omcs,  # scalar
+##            enable_Upsilon,
+##            om_ups1_kernel,
+##            om_ups2_kernel,
+##            om_ups3_kernel,
+##            om_ups4_kernel,
+##            Lam_Ups,  # shape (vperp,vprll,1)
+##            psihat,  # shape (3,vperp,vprll,s)
+##            sp_vth_perp,  # scalar
+##            sp_Omcs,  # scalar
     ):
         """Pure numpy broadcasting, no numba or MPI"""
 
@@ -1737,19 +1760,19 @@ class BounceAvgESPerp(object):
         # Make J_0^2(...) grid
         Jarg = kk5d * vperp5d
         J0 = scipy.special.jv(0, Jarg)
-        J1_J0 = scipy.special.jv(1, Jarg) / J0
-        J2_J0 = scipy.special.jv(2, Jarg) / J0
+##        J1_J0 = scipy.special.jv(1, Jarg) / J0
+##        J2_J0 = scipy.special.jv(2, Jarg) / J0
         J0sq = J0**2
 
         # pre-alloc for bounce average and other compute
         inv_r_r0        = 1./r_r0
         om_bkg          = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
         om_drift        = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
-        om_ups1         = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
-        om_ups2         = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
-        om_ups3         = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
-        om_ups4         = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
-        om_ups          = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
+##        om_ups1         = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
+##        om_ups2         = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
+##        om_ups3         = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
+##        om_ups4         = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
+##        om_ups          = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
         minus_J0sq_Teff = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
         x_grid          = np.empty_like(v_bkg,  dtype=np.complex128) # (vperp,vprll,s)
         result_BA       = np.empty_like(df,     dtype=np.complex128) # (vperp,vprll)
@@ -1775,27 +1798,27 @@ class BounceAvgESPerp(object):
             om_drift[:]        = v_drift * kv * inv_r_r0 * np.sign(sp_q)
             minus_J0sq_Teff[:] = -1 * J0sq[ii,0,0,:,:,np.newaxis] * inv_Teff
 
-            if enable_Upsilon:  # experimental
-                om_ups1[:] = Jarg[ii,0,0,:,:,np.newaxis] * om_ups1_kernel * np.sign(sp_q)
-                om_ups1[self.orbit.vperp_loc==0] = (
-                        -0.5*Lam_Ups * kk5d[ii,0,0,:,:,np.newaxis]
-                        * 2*self.orbit.vprll_loc**2
-                        * np.sum(psihat * self.orbit.dbhat_ds, axis=0)
-                        / sp_vth_perp / sp_Omcs  # "standard" normalization with signed Omcs
-                        * np.sign(sp_q)  # re-attach the charge sign for kk5d
-                        * self.orbit.r_r0 # because "plain" k_perp/Omega0 appears without
-                                         # v_perp factor, it's no longer bounce invariant,
-                                         # so attach r(s)/r(0) --ATr,2026apr21
-                        # This assignment must follow (cannot precede)
-                        # the om_ups1[:] = ... statement
-                )[self.orbit.vperp_loc==0]  # notice duplicate selector needed here
-                om_ups2[:] = (       Jarg[ii,0,0,:,:,np.newaxis]
-                              + 2 * J1_J0[ii,0,0,:,:,np.newaxis] ) * om_ups2_kernel * np.sign(sp_q)
-                om_ups3[:] = Jarg[ii,0,0,:,:,np.newaxis] * J1_J0[ii,0,0,:,:,np.newaxis] * om_ups3_kernel
-                om_ups4[:] = Jarg[ii,0,0,:,:,np.newaxis] * J1_J0[ii,0,0,:,:,np.newaxis] * om_ups4_kernel
-
-                om_ups [:] = om_ups1 + om_ups2 + om_ups3 + om_ups4
-                om_bkg += om_ups
+##            if enable_Upsilon:  # experimental
+##                om_ups1[:] = Jarg[ii,0,0,:,:,np.newaxis] * om_ups1_kernel * np.sign(sp_q)
+##                om_ups1[self.orbit.vperp_loc==0] = (
+##                        -0.5*Lam_Ups * kk5d[ii,0,0,:,:,np.newaxis]
+##                        * 2*self.orbit.vprll_loc**2
+##                        * np.sum(psihat * self.orbit.dbhat_ds, axis=0)
+##                        / sp_vth_perp / sp_Omcs  # "standard" normalization with signed Omcs
+##                        * np.sign(sp_q)  # re-attach the charge sign for kk5d
+##                        * self.orbit.r_r0 # because "plain" k_perp/Omega0 appears without
+##                                         # v_perp factor, it's no longer bounce invariant,
+##                                         # so attach r(s)/r(0) --ATr,2026apr21
+##                        # This assignment must follow (cannot precede)
+##                        # the om_ups1[:] = ... statement
+##                )[self.orbit.vperp_loc==0]  # notice duplicate selector needed here
+##                om_ups2[:] = (       Jarg[ii,0,0,:,:,np.newaxis]
+##                              + 2 * J1_J0[ii,0,0,:,:,np.newaxis] ) * om_ups2_kernel * np.sign(sp_q)
+##                om_ups3[:] = Jarg[ii,0,0,:,:,np.newaxis] * J1_J0[ii,0,0,:,:,np.newaxis] * om_ups3_kernel
+##                om_ups4[:] = Jarg[ii,0,0,:,:,np.newaxis] * J1_J0[ii,0,0,:,:,np.newaxis] * om_ups4_kernel
+##
+##                om_ups [:] = om_ups1 + om_ups2 + om_ups3 + om_ups4
+##                om_bkg += om_ups
 
             _t0b = time.perf_counter()
             self.time_setup_kloop += _t0b - _t0a
