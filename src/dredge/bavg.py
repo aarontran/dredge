@@ -7,6 +7,8 @@ import time
 import numba
 import numpy as np
 
+from .util import trapezoid_weights
+
 # TODO: implement methods from https://arxiv.org/abs/2412.01724
 
 
@@ -191,6 +193,19 @@ class OrbitAverage(object):
         """Like self.bounce_average(...), but with numba JIT compilation."""
         raise NotImplementedError
 
+    def bounce_average_weights(self):
+        """
+        Quadrature weights W for normalized orbit average, such that
+            self.bounce_average_norm_raw(x) == np.sum(W * x, axis=-1)
+        up to floating-point roundoff.
+
+        Return:
+            W = shape (vperp, vprll, s)
+
+        --Claude,2026nov04
+        """
+        raise NotImplementedError
+
 
 class UniformOrbitAverage(OrbitAverage):
 
@@ -220,6 +235,10 @@ class UniformOrbitAverage(OrbitAverage):
     def bounce_average_njit(self, x, norm=True):
         assert norm
         return x[...,0]
+
+    def bounce_average_weights(self):
+        """Trivial weights, orbit average is s=0 value. --Claude,2026nov04"""
+        return np.ones_like(self.ssamp)
 
 
 class BounceOrbitAverage(OrbitAverage):
@@ -560,6 +579,42 @@ class BounceOrbitAverage(OrbitAverage):
         self.time_bavg_singu += _t3 - _t2
 
         return result
+
+    def bounce_average_weights(self):
+        """
+        Quadrature weights W for normalized bounce average, such that
+            self.bounce_average_norm_raw(x) == np.sum(W * x, axis=-1)
+        up to floating-point roundoff.
+        Singular line v_parallel = 0 is handled same as bounce_average_norm_raw.
+
+        Return:
+            W = shape (vperp, vprll, s)
+
+        --Claude,2026nov04
+        """
+        W = (  trapezoid_weights(self.ssamp)
+             * self.inv_vprll_loc_abs
+             * self.inv_tbounce4th[:,:,np.newaxis] )
+
+        pitch90 = (self.species.vprll_vec == 0)
+        muzero = (self.species.vperp_vec == 0)
+        if np.any(pitch90):
+            jj = np.where(pitch90)[0][0]
+
+            # v_parallel = 0 line only samples x at s=0; this also discards
+            # NaN from vprll_loc at s>0, which lies beyond the turning point
+            W[:,jj,:] = 0.
+
+            # limiting form of bounce-average integral near the singularity
+            W[~muzero,jj,0] = (
+                np.pi/2 * (self.species.mass / self.dB_ds2_origin)**0.5
+                / (self.mu[~muzero,jj])**0.5
+            ) * self.inv_tbounce4th[~muzero,jj]
+
+            # origin v_parallel = v_perp = 0
+            W[muzero,jj,0] = 1.
+
+        return W
 
     def bounce_average_njit(self, x, norm=True):
         """

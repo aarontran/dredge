@@ -133,7 +133,7 @@ def test_uniform_orbit_average_is_s0_value():
 
 
 @pytest.mark.mpi_skip
-@pytest.mark.parametrize('ion_method', ['expand', 'loop5d', 'loop6d'])
+@pytest.mark.parametrize('ion_method', ['expand', 'loop5d', 'loop6d', 'claude_fused'])
 def test_circular_interchange(ion_method):
 
     dd, (k_root, omega_re_root, omega_im_root) = dispersion(ion_method, 'circular')
@@ -163,6 +163,6 @@ def test_circular_matches_parabolic():
 
 if __name__ == '__main__':
     test_uniform_orbit_average_is_s0_value()
-    for m in ['expand', 'loop5d', 'loop6d']:
+    for m in ['expand', 'loop5d', 'loop6d', 'claude_fused']:
         test_circular_interchange(m)
     test_circular_matches_parabolic()

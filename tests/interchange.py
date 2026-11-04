@@ -292,6 +292,20 @@ def test_interchange_loop6d():
     assert within_rtol( omega_im_root[0], 0.0072, rtol = 1e-8)
 
 
+@pytest.mark.mpi_skip
+def test_interchange_claude_fused():
+    """--Claude,2026nov04"""
+
+    k_root, omega_re_root, omega_im_root = interchange(ion_method='claude_fused')
+
+    assert k_root.size == 1
+    assert omega_re_root.size == 1
+    assert omega_im_root.size == 1
+
+    assert within_rtol( omega_re_root[0], 0.000800009, rtol = 1e-9)
+    assert within_rtol( omega_im_root[0], 0.0072, rtol = 1e-8)
+
+
 @pytest.mark.mpi(min_size=4)
 def test_interchange_loop6d_nproc4():
 
@@ -329,6 +343,7 @@ if __name__ == '__main__':
         test_interchange_expand()
         test_interchange_loop5d()
         test_interchange_loop6d()
+        test_interchange_claude_fused()
         print("To test MPI functionality, rerun this script with 4 MPI ranks")
 
     elif MPI.COMM_WORLD.Get_size() == 4:

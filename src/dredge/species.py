@@ -9,6 +9,7 @@ from scipy.interpolate import RegularGridInterpolator
 
 from .const import CLIGHT, Q_ELEMENTARY
 from . import vdf
+from .util import trapezoid_weights
 
 
 class Species(object):
@@ -245,6 +246,22 @@ class KineticVDFGrid(Species):
 
     def moment(self, *args, **kwargs):
         return self.moment_bcast_left(*args, **kwargs)
+
+    def moment_weights(self):
+        """
+        Velocity-space quadrature weights W, including the distribution df,
+        such that
+            self.moment(x) == np.sum(W * x)
+        up to floating-point roundoff, for x with shape (vperp, vprll).
+
+        Return:
+            W = shape (vperp, vprll)
+
+        --Claude,2026nov04
+        """
+        wperp = trapezoid_weights(self.vperp_vec) * 2*np.pi*self.vperp_vec
+        wprll = trapezoid_weights(self.vprll_vec)
+        return wperp[:,np.newaxis] * wprll[np.newaxis,:] * self.df
 
     def moment_bcast_left(self, x):
         """

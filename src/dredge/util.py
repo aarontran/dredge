@@ -20,6 +20,25 @@ def printn(x, *args, **kwargs):
     return print(f'[{rank:d}]', x, *args, **kwargs)
 
 
+def trapezoid_weights(x):
+    """
+    Quadrature weights w for trapezoidal rule along last axis, such that
+        np.sum(w * y, axis=-1) == np.trapezoid(y, x, axis=-1)
+    up to floating-point roundoff.
+    Input:
+        x = sample points, numpy array of any shape, integrate along last axis
+    Return:
+        w = numpy array, same shape as x
+
+    --Claude,2026nov04
+    """
+    dx = np.diff(x, axis=-1)
+    w = np.zeros_like(x, dtype=np.float64)
+    w[...,1:]  += 0.5*dx
+    w[...,:-1] += 0.5*dx
+    return w
+
+
 def searchsortedclosest(a, v, side='left'):
     """
     Thin wrapper around numpy.searchsorted(...) to get closest element index,

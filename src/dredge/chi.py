@@ -1114,6 +1114,12 @@ class BounceAvgESPerp(object):
                            MOST LIKELY this will be deprecated in the near
                            future --ATr,2026mar13
 
+                'claude_fused' = same result as 'loop6d', but precompute
+                                 bounce-average and velocity-moment quadrature
+                                 weights, then evaluate sum over resonant poles
+                                 with numba-parallel kernel.
+                                 ~10-100x faster than 'loop6d'.
+
                 'expand' = assume ωD/ω << 1, Taylor expand resonant denominator
                            and evaluate with very fast broadcasted array ops
                            b/c integral becomes "more" separable, so we don't
@@ -1630,6 +1636,39 @@ class BounceAvgESPerp(object):
 
             return chi
 
+        # --Claude,2026nov04
+        elif method == 'claude_fused':
+
+            mom = np.zeros((self.k_vec.size,
+                            self.omega_re_vec.size,
+                            self.omega_im_vec.size), dtype=np.complex128)
+
+            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            # Boltzmann response f_{1B} independent of (k,ω), no loop needed
+            inv_Teff_BA = self.orbit.bounce_average_njit( inv_Teff )
+            inv_Teff_BA = inv_Teff_BA[np.newaxis,np.newaxis,np.newaxis,:,:]
+
+            mom += sp.moment( inv_Teff_BA )
+
+            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            # Gyrotropic response h(...) as sum over resonant poles
+            mom += self._chi_GK_kernel_claude_fused(
+                k_vec           = self.k_vec,
+                omega_re_vec    = self.omega_re_vec,
+                omega_im_vec    = self.omega_im_vec,
+                vperp_vec       = sp.vperp_vec / sp.vth_perp,  # make dimensionless
+                inv_Teff        = inv_Teff,
+                v_bkg           = v_bkg,
+                v_drift         = v_drift,
+                r_r0            = self.orbit.r_r0,
+                sp_q            = sp.q,
+            )
+
+            # parentheses minimize arithmetic operations
+            chi = (2. * omps_Omcs**2 / kk**2) * mom
+
+            return chi
+
         # Compute chi using vectorized operations over multi-D numpy arrays
         # be very careful about numpy axis positions and broadcasting
         elif method == 'expand':
@@ -1902,6 +1941,115 @@ class BounceAvgESPerp(object):
         printn(f'time tot         {self.time_tot       :.6f}')
 
         return result
+
+    def _chi_GK_kernel_claude_fused(
+            self,
+            k_vec,          # 1d array, dimensionless scaled to rLs (abs)
+            omega_re_vec,   # 1d array, dimensionless scaled to Omcs (signed)
+            omega_im_vec,   # 1d array, dimensionless scaled to Omcs (signed)
+            vperp_vec,      # 1d array, dimensionless scaled to vth
+            # Pieces to construct integrand
+            inv_Teff,   # shape (vperp,vprll,s)
+            v_bkg,      # shape (vperp,vprll,s)
+            v_drift,    # shape (vperp,vprll,s)
+            r_r0,       # shape (vperp,vprll,s)
+            # for resolving sign of omega_drift, omega_bkg
+            sp_q,       # scalar, species charge
+    ):
+        """
+        Same result as _chi_GK_kernel6D, restructured for speed.
+
+        Bounce average and velocity moment are both linear in the integrand,
+        so they collapse into one set of quadrature weights W(vperp,vprll,s)
+        that is independent of (k, ω):
+
+            moment(bounce_average(x)) = sum_{vperp,vprll,s} W * x
+
+        For each k, fold -J0^2/Teff into the weights (call it K), and write
+
+            (ω - ω_bkg)/(ω - ω_D) = 1 + (ω_D - ω_bkg)/(ω - ω_D)
+
+        so the gyrotropic response becomes a sum over real poles ω_D:
+
+            sum K + sum K (ω_D - ω_bkg) / (ω - ω_D)
+
+        which a numba kernel evaluates for all ω without allocating any
+        (vperp,vprll,s) temporary arrays.
+
+        --Claude,2026nov04
+        """
+        assert np.isrealobj(v_bkg) and np.isrealobj(v_drift)
+
+        W = (  self.orbit.bounce_average_weights()
+             * self.species.moment_weights()[:,:,np.newaxis] )
+
+        # r/r0 accounts for k_perp varying along field line
+        # Need charge sign factor to work with k normalization.
+        sgn_inv_r_r0 = np.sign(sp_q) / r_r0
+
+        result = np.empty((k_vec.size, omega_re_vec.size, omega_im_vec.size),
+                          dtype=np.complex128)
+
+        for ii in range(k_vec.size):
+            kv = k_vec[ii]
+
+            J0sq = scipy.special.jv(0, kv * vperp_vec)**2
+            K = -1 * (W * J0sq[:,np.newaxis,np.newaxis] * inv_Teff).ravel()
+
+            om_bkg   = (v_bkg   * kv * sgn_inv_r_r0).ravel()
+            om_drift = (v_drift * kv * sgn_inv_r_r0).ravel()
+
+            # drop points with zero weight; needed b/c v_parallel = 0 line has
+            # NaN drifts at s > 0 (past turning point), which loop6d discards
+            # by overwriting the bounce average there.  Also saves compute.
+            sel = (K != 0.)
+            K = K[sel]
+
+            self._chi_GK_claude_fused_cauchy_sum_numba(
+                omega_re_vec = omega_re_vec,
+                omega_im_vec = omega_im_vec,
+                residue      = K * (om_drift[sel] - om_bkg[sel]),
+                pole         = om_drift[sel],
+                offset       = np.sum(K),
+                out          = result[ii],
+            )
+
+        return result
+
+    @staticmethod
+    @numba.njit(parallel=True)
+    def _chi_GK_claude_fused_cauchy_sum_numba(
+            omega_re_vec,   # 1d array
+            omega_im_vec,   # 1d array
+            residue,        # 1d array, real
+            pole,           # 1d array, real
+            offset,         # scalar, real
+            out,            # shape (omega_re, omega_im), complex, overwritten
+    ):
+        """
+        Evaluate on grid of ω = omega_re + i*omega_im:
+
+            out = offset + sum_m residue[m] / (ω - pole[m])
+
+        using real arithmetic, since poles and residues are real.
+
+        --Claude,2026nov04
+        """
+        n_re = omega_re_vec.size
+        n_im = omega_im_vec.size
+        for idx in numba.prange(n_re * n_im):
+            jj = idx // n_im
+            nn = idx % n_im
+            b  = omega_im_vec[nn]
+            b2 = b*b
+            acc_re = 0.
+            acc_im = 0.
+            for mm in range(pole.size):
+                a = omega_re_vec[jj] - pole[mm]
+                d = residue[mm] / (a*a + b2)
+                acc_re += a*d
+                acc_im -= b*d
+            out[jj,nn] = offset + acc_re + 1j*acc_im
 
     # ------------------------------------------------------
     # profiling, internal methods for dev use
