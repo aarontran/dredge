@@ -1195,6 +1195,32 @@ class BounceAvgESPerp(object):
         assert np.all(Teff != 0.)  # 1/0 kills later calculations
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # wavevector, flux-surface-normal unit vectors
+        # to help construct "Boltzmann B-field drift freq"
+        # and non-maxwellian diamagnetic drift freq
+        # shape (3,vperp,vprll,NS_RESOLUTION)
+        khat = np.zeros_like(self.orbit.bhat)
+        khat[0] = 1.  # poloidal direction along x in cartesian grid
+        psihat = np.cross(self.orbit.bhat, khat, axisa=0,axisb=0,axisc=0)
+
+        # construct "anisotropy temperature" which measures
+        # pitch-angle dependent structure
+        Upsilon = -1 * sp.df[:,:,np.newaxis] / dF0_dmu_B
+        # we need ceiling here....
+        if Teff_ceiling is not None:
+            _Tmax = Teff_ceiling / (0.5 * sp.m * sp.vth_perp**2)  # make dimensionless
+            Upsilon[Upsilon >=    _Tmax] =    _Tmax
+            Upsilon[Upsilon <= -1*_Tmax] = -1*_Tmax
+            del _Tmax
+        assert np.all(np.isfinite(Upsilon))  # inf/NaN kills later calculations
+        assert np.all(Upsilon != 0.)  # 1/0 kills later calculations
+        # Note Teff is already ceiling'ed
+        Lam_Ups = Teff / Upsilon
+        # Another way, but need sensible ceiling and floor too...
+        #Lam_Ups = dF0_dmu_B / (dF0_dE + dF0_dmu_B)
+        #Lam_Ups[~np.isfinite(Lam_Ups)] = 0.  # stupid hack
+
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # compute velocities on (vperp,vprll,s) grid
 
         # DIAMAGNETIC DRIFT VELOCITY (dimensionless)
@@ -1221,7 +1247,25 @@ class BounceAvgESPerp(object):
         # --ATr,2026april21
 
         #v_star = 0.5 * (-epsN) * Teff / np.sqrt(self.orbit.B_B0)  # OLD 2025fall/2026spring less accurate
-        v_star = 0.5 * (-epsN) * Teff * self.orbit.r_r0 * np.sign(sp.q)
+        #v_star = 0.5 * (-epsN) * Teff * self.orbit.r_r0 * np.sign(sp.q)
+
+        # Below fixes weird behavior when ion anisotropy != electron anisotropy
+        # again related to F(epsilon,mu) with B(r) in mu putting spatial
+        # dependence into the distribution function...
+        #     dn/dy = d(n_0)/dy - n_0 grad(ln B) \int \mu d\hat{F}/d\mu d^3v
+        # for F = n_0(R) * \hat{F}(epsilon,mu).
+        # Only valid for the case of no temperature gradient.
+
+        v_star = 0.5 * Teff * self.orbit.r_r0 * np.sign(sp.q) * (
+                - epsN
+                + np.sum(psihat * self.orbit.gradB, axis=0) / self.orbit.Bmag # del(ln B)
+                  * sp.moment_bcast_right(
+                        0.5*sp.mass*self.orbit.vperp_loc**2  # shape (vperp,vprll,s)
+                        / (Upsilon*sp.Tperp)  # restore dimensionful units
+                    )[np.newaxis,np.newaxis,:]
+                  * sp.rLs(self.B0)  # same dimensionless norm as epsN
+        )
+
         # if Bz < 0, v_* flips direction and \psi increases radially inwards
         # query bhat_z at s=0 (midplane), at any point in velocity space
         v_star *= np.sign(self.orbit.bhat[2,0,0,0])
@@ -1254,30 +1298,6 @@ class BounceAvgESPerp(object):
         # assemble "Boltzmann B-field drift freq" using four "kernels"
         # on grid (s,vperp,vprll), focusing on factors that can be computed
         # without knowledge of k_\perp and \omega
-
-        # wavevector, flux-surface-normal unit vectors
-        # to help construct "Boltzmann B-field drift freq"
-        # shape (3,vperp,vprll,NS_RESOLUTION)
-        khat = np.zeros_like(self.orbit.bhat)
-        khat[0] = 1.  # poloidal direction along x in cartesian grid
-        psihat = np.cross(self.orbit.bhat, khat, axisa=0,axisb=0,axisc=0)
-
-        # construct "anisotropy temperature" which measures
-        # pitch-angle dependent structure
-        Upsilon = -1 * sp.df[:,:,np.newaxis] / dF0_dmu_B
-        # we need ceiling here....
-        if Teff_ceiling is not None:
-            _Tmax = Teff_ceiling / (0.5 * sp.m * sp.vth_perp**2)  # make dimensionless
-            Upsilon[Upsilon >=    _Tmax] =    _Tmax
-            Upsilon[Upsilon <= -1*_Tmax] = -1*_Tmax
-            del _Tmax
-        assert np.all(np.isfinite(Upsilon))  # inf/NaN kills later calculations
-        assert np.all(Upsilon != 0.)  # 1/0 kills later calculations
-        # Note Teff is already ceiling'ed
-        Lam_Ups = Teff / Upsilon
-        # Another way, but need sensible ceiling and floor too...
-        #Lam_Ups = dF0_dmu_B / (dF0_dE + dF0_dmu_B)
-        #Lam_Ups[~np.isfinite(Lam_Ups)] = 0.  # stupid hack
 
         if enable_Upsilon:
 
